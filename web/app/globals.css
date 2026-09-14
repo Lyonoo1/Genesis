@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0B0D11;
+  --foreground: #F3F4F6;
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-hover: rgba(255, 255, 255, 0.16);
+
+  /* Density Tokens */
+  --message-gap: 24px;
+  --message-padding: 20px;
+}
+
+[data-density="compact"] {
+  --message-gap: 12px;
+  --message-padding: 12px;
+}
+
+html,
+body {
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #0B0D11;
+  color: #F3F4F6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 文本选中高亮：20% 冰川青背景 + 冰川青文字 */
+::selection {
+  background-color: rgba(34, 211, 238, 0.2);
+  color: #22D3EE;
+}
+
+/* 极细滚动条 */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+@layer utilities {
+  .border-hairline {
+    border: 1px solid var(--hairline);
+  }
+  .border-hairline-hover:hover {
+    border-color: var(--hairline-hover);
+  }
+}
