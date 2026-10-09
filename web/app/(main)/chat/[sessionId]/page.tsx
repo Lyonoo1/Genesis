@@ -1,20 +1,24 @@
-import React from "react";
+"use client";
+
+import React, { useEffect } from "react";
+import { useSessionStore } from "@/stores/useSessionStore";
+import { useChatStore } from "@/stores/useChatStore";
+import { MessageContainer } from "@/components/chat/MessageContainer";
 
 export default function SessionChatPage({
   params,
 }: {
   params: { sessionId: string };
 }) {
-  return (
-    <div className="space-y-4">
-      <div className="p-4 rounded-lg border border-hairline bg-surface-sidebar">
-        <span className="text-xs font-mono text-accent-cyan">
-          Session ID: {params.sessionId}
-        </span>
-        <p className="mt-2 text-sm text-genesis-secondary">
-          当前会话就绪。后续 FE-Step 3 将在此装配 MessageList、MessageBubble 与流式打字机渲染器。
-        </p>
-      </div>
-    </div>
-  );
+  const { setActiveSessionId } = useSessionStore();
+  const { switchSession } = useChatStore();
+
+  useEffect(() => {
+    if (params.sessionId) {
+      setActiveSessionId(params.sessionId);
+      switchSession(params.sessionId);
+    }
+  }, [params.sessionId, setActiveSessionId, switchSession]);
+
+  return <MessageContainer sessionId={params.sessionId} />;
 }

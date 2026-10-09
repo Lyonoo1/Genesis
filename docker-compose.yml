@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: genesis-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./api/.env
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8000
+      - FRONTEND_URL=http://localhost:3000
+    volumes:
+      - ./api:/app
+      - /app/.venv
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: genesis-web
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./web/.env.local
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+networks:
+  default:
+    name: genesis-network

@@ -1,12 +1,33 @@
+/* ==============================================================================
+   Claude Typography System - 本地离线开源字体平替系统
+   - Plus Jakarta Sans: Claude UI 几何无衬线平替
+   - Newsreader: Claude 衬线长文平替
+   - JetBrains Mono: 代码等宽平替
+   ============================================================================== */
+@import "@fontsource/plus-jakarta-sans/400.css";
+@import "@fontsource/plus-jakarta-sans/500.css";
+@import "@fontsource/plus-jakarta-sans/600.css";
+@import "@fontsource/plus-jakarta-sans/700.css";
+
+@import "@fontsource/newsreader/400.css";
+@import "@fontsource/newsreader/500.css";
+@import "@fontsource/newsreader/600.css";
+@import "@fontsource/newsreader/700.css";
+@import "@fontsource/newsreader/400-italic.css";
+
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --background: #0B0D11;
-  --foreground: #F3F4F6;
-  --hairline: rgba(255, 255, 255, 0.08);
-  --hairline-hover: rgba(255, 255, 255, 0.16);
+  --background: #181818;
+  --foreground: #ECECEE;
+  --hairline: #303033;
+  --hairline-hover: #404044;
 
   /* Density Tokens */
   --message-gap: 24px;
@@ -20,21 +41,44 @@
 
 html,
 body {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  min-height: 100%;
   margin: 0;
   padding: 0;
-  overflow: hidden;
-  background-color: #0B0D11;
-  color: #F3F4F6;
+  background-color: #181818;
+  color: #ECECEE;
+  font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 文本选中高亮：20% 冰川青背景 + 冰川青文字 */
-::selection {
-  background-color: rgba(34, 211, 238, 0.2);
-  color: #22D3EE;
+/* 全局任意元素、代码块及表单输入框文本选中高亮：优雅低调的深色半透明灰白背景，彻底消除刺眼蓝底 */
+::selection,
+*::selection {
+  background-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+::-moz-selection,
+*::-moz-selection {
+  background-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+input::selection,
+textarea::selection,
+[contenteditable="true"]::selection,
+[contenteditable]::selection {
+  background-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+input::-moz-selection,
+textarea::-moz-selection,
+[contenteditable="true"]::-moz-selection,
+[contenteditable]::-moz-selection {
+  background-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
 }
 
 /* 极细滚动条 */
@@ -62,5 +106,12 @@ body {
   }
   .border-hairline-hover:hover {
     border-color: var(--hairline-hover);
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
   }
 }

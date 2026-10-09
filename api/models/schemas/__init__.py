@@ -14,6 +14,28 @@ from models.schemas.message import (
     MessageResponse,
     MessageListResponse,
 )
+from models.schemas.mcp import (
+    McpToolItem,
+    McpServerCreate,
+    McpServerUpdate,
+    McpServerResponse,
+    McpToolToggle,
+    McpToolCallRequest,
+    McpToolCallResponse,
+)
+from models.schemas.skill import (
+    SkillManifest,
+    SkillInstallRequest,
+    SkillAutoTriggerToggle,
+    SkillResponse,
+    SkillExecuteRequest,
+    SkillExecuteResponse,
+)
+from models.schemas.chat import (
+    SSEEventName,
+    ChatRequest,
+    ChatStopResponse,
+)
 
 __all__ = [
     "SessionCreate",
@@ -28,4 +50,21 @@ __all__ = [
     "MessageCreate",
     "MessageResponse",
     "MessageListResponse",
+    "McpToolItem",
+    "McpServerCreate",
+    "McpServerUpdate",
+    "McpServerResponse",
+    "McpToolToggle",
+    "McpToolCallRequest",
+    "McpToolCallResponse",
+    "SkillManifest",
+    "SkillInstallRequest",
+    "SkillAutoTriggerToggle",
+    "SkillResponse",
+    "SkillExecuteRequest",
+    "SkillExecuteResponse",
+    "SSEEventName",
+    "ChatRequest",
+    "ChatStopResponse",
 ]
+

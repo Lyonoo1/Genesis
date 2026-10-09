@@ -9,6 +9,18 @@ from core.exceptions import AppException, ErrorCode
 from core.security import get_current_user, AuthenticatedUser
 from fastapi import Depends
 from routers.sessions import router as sessions_router
+from routers.projects import router as projects_router
+from routers.mcp import router as mcp_router
+from routers.skills import router as skills_router
+from routers.chat import router as chat_router
+from routers.marketplace import router as marketplace_router
+from routers.usage import router as usage_router
+from routers.models import router as models_router
+from routers.db_viewer import router as db_viewer_router
+from core.sqlite_db import init_sqlite_db
+
+# 初始化本地持久化 SQLite 数据库体系
+init_sqlite_db()
 
 app = FastAPI(
     title="Genesis AI 智能体工作台 Core API",
@@ -19,16 +31,26 @@ app = FastAPI(
 
 # 挂载业务路由
 app.include_router(sessions_router, prefix="/api")
+app.include_router(projects_router, prefix="/api")
+app.include_router(mcp_router, prefix="/api")
+app.include_router(skills_router, prefix="/api")
+app.include_router(chat_router, prefix="/api")
+app.include_router(marketplace_router, prefix="/api")
+app.include_router(usage_router, prefix="/api")
+app.include_router(models_router, prefix="/api")
+app.include_router(db_viewer_router)
 
 # CORS 配置
 origins = [
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
     settings.FRONTEND_URL,
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -32,12 +32,20 @@ class Settings(BaseSettings):
         description="Supabase JWT 签名 Secret，用于本地脱机高速验签",
     )
 
-    # LLM API Keys
+    # LLM API Keys & Base URLs
     OPENAI_API_KEY: Optional[str] = Field(
         default=None, description="OpenAI API 密钥"
     )
+    OPENAI_BASE_URL: str = Field(
+        default="https://api.openai.com/v1",
+        description="OpenAI API Base URL (支持中转与第三方如 DeepSeek/Qwen)",
+    )
     ANTHROPIC_API_KEY: Optional[str] = Field(
         default=None, description="Anthropic API 密钥"
+    )
+    ANTHROPIC_BASE_URL: str = Field(
+        default="https://api.anthropic.com/v1",
+        description="Anthropic API Base URL",
     )
 
     # Sandbox Config

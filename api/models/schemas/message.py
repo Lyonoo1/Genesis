@@ -30,13 +30,14 @@ class ToolCallItem(BaseModel):
 class MessageCreate(BaseModel):
     """创建持久化消息入参"""
 
-    session_id: UUID
+    session_id: Any
     role: MessageRole
     content: Optional[str] = None
-    parent_id: Optional[UUID] = None
+    reasoning_content: Optional[str] = None
+    parent_id: Optional[Any] = None
     raw_tool_calls: Optional[list[ToolCallItem]] = None
     tool_call_id: Optional[str] = None
-    active_skill_id: Optional[UUID] = None
+    active_skill_id: Optional[Any] = None
     status: MessageStatus = MessageStatus.SUCCESS
 
 
@@ -45,16 +46,18 @@ class MessageResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: UUID
-    session_id: UUID
-    parent_id: Optional[UUID] = None
+    id: Any
+    session_id: Any
+    parent_id: Optional[Any] = None
     role: str
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
     raw_tool_calls: Optional[list[dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
-    active_skill_id: Optional[UUID] = None
+    active_skill_id: Optional[Any] = None
     status: str
-    created_at: datetime
+    created_at: Any
+
 
 
 class MessageListResponse(BaseModel):

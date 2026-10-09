@@ -1,22 +1,31 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
+
 
 
 class SessionCreate(BaseModel):
     """创建会话入参"""
 
+    id: Optional[str] = Field(
+        default=None,
+        description="可选指定会话 ID（UUID）",
+    )
     title: Optional[str] = Field(
         default="新对话",
         max_length=100,
         description="会话标题",
         examples=["Genesis 架构设计讨论"],
     )
+    project_id: Optional[str] = Field(
+        default=None,
+        description="所属项目 ID",
+    )
 
 
 class SessionUpdate(BaseModel):
-    """更新会话入参（重命名/置顶）"""
+    """更新会话入参（重命名/置顶/项目迁移/归档）"""
 
     title: Optional[str] = Field(
         default=None,
@@ -30,6 +39,14 @@ class SessionUpdate(BaseModel):
         description="是否置顶",
         examples=[True],
     )
+    project_id: Optional[str] = Field(
+        default=None,
+        description="所属项目 ID",
+    )
+    is_archived: Optional[bool] = Field(
+        default=None,
+        description="是否已归档",
+    )
 
 
 class SessionResponse(BaseModel):
@@ -37,11 +54,13 @@ class SessionResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: UUID
+    id: Any
+    project_id: Optional[Any] = None
     title: str
     pinned: bool
-    created_at: datetime
-    updated_at: datetime
+    is_archived: Optional[bool] = False
+    created_at: Any
+    updated_at: Any
 
 
 class CapabilityItem(BaseModel):
@@ -53,7 +72,7 @@ class CapabilityItem(BaseModel):
         description="能力类型：skill 或 mcp",
         examples=["skill"],
     )
-    capability_id: UUID = Field(
+    capability_id: Any = Field(
         ...,
         description="对应 Skill 或 MCP 的唯一 ID",
     )
@@ -75,5 +94,6 @@ class SessionCapabilitiesUpdate(BaseModel):
 class SessionCapabilitiesResponse(BaseModel):
     """会话能力开关列表响应"""
 
-    session_id: UUID
+    session_id: Any
+
     capabilities: list[CapabilityItem]

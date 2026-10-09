@@ -1,12 +1,16 @@
 # OS files
 .DS_Store
 Thumbs.db
+._*
 
 # Environments & secrets
 .env
 .env*.local
 *.env
 !.env.example
+*.pem
+*.key
+*.cert
 
 # Python
 __pycache__/
@@ -18,6 +22,8 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+.ruff_cache/
+.mypy_cache/
 
 # Node / Web
 node_modules/
@@ -26,3 +32,30 @@ out/
 dist/
 build/
 *.tsbuildinfo
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+.turbo/
+.vercel/
+
+# Supabase
+supabase/.branches/
+supabase/.temp/
+supabase/.env.local
+
+# IDEs & Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Internal project docs
+GenesisCode项目文件/

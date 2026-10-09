@@ -1,7 +1,8 @@
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
+
 
 from core.security import get_current_user, AuthenticatedUser
 from models.schemas.session import (
@@ -68,7 +69,7 @@ async def create_session(
     summary="更新会话信息（重命名 / 置顶切换）",
 )
 async def update_session(
-    session_id: UUID,
+    session_id: str,
     body: SessionUpdate,
     user: AuthenticatedUser = Depends(get_current_user),
     repo: SessionRepository = Depends(get_session_repo),
@@ -83,7 +84,7 @@ async def update_session(
     description="删除会话及其关联的所有消息与能力开关记录",
 )
 async def delete_session(
-    session_id: UUID,
+    session_id: str,
     user: AuthenticatedUser = Depends(get_current_user),
     repo: SessionRepository = Depends(get_session_repo),
 ):
@@ -97,13 +98,18 @@ async def delete_session(
 
 
 @router.get(
+    "/sessions/{session_id}/messages",
+    response_model=MessageListResponse,
+    include_in_schema=False,
+)
+@router.get(
     "/chat/{session_id}/messages",
     response_model=MessageListResponse,
     summary="游标分页拉取会话消息历史",
     description="支持通过 ISO 8601 cursor 进行历史向前翻页，返回按时间正序排列的会话消息",
 )
 async def get_session_messages(
-    session_id: UUID,
+    session_id: str,
     cursor: Optional[str] = Query(
         default=None, description="分页游标（上一批次最旧消息的 created_at）"
     ),
@@ -139,7 +145,7 @@ async def get_session_messages(
 
 
 class PruneBranchRequest(BaseModel):
-    parent_id: UUID
+    parent_id: Any
 
 
 @router.post(
@@ -148,7 +154,7 @@ class PruneBranchRequest(BaseModel):
     description="物理删除指定 parent_id 之后的所有历史分支消息，保持单线上下文整洁",
 )
 async def prune_session_branch(
-    session_id: UUID,
+    session_id: str,
     body: PruneBranchRequest,
     user: AuthenticatedUser = Depends(get_current_user),
     msg_repo: MessageRepository = Depends(get_message_repo),
@@ -172,7 +178,7 @@ async def prune_session_branch(
     summary="获取指定会话的能力开关列表",
 )
 async def get_capabilities(
-    session_id: UUID,
+    session_id: str,
     user: AuthenticatedUser = Depends(get_current_user),
     repo: SessionRepository = Depends(get_session_repo),
 ):
@@ -197,7 +203,7 @@ async def get_capabilities(
     description="在当前会话下开启/关闭特定 Skill 或 MCP Server 连接",
 )
 async def update_capabilities(
-    session_id: UUID,
+    session_id: str,
     body: SessionCapabilitiesUpdate,
     user: AuthenticatedUser = Depends(get_current_user),
     repo: SessionRepository = Depends(get_session_repo),
@@ -214,3 +220,37 @@ async def update_capabilities(
             for r in records
         ],
     )
+
+
+@router.post(
+    "/sessions/{session_id}/generate-title",
+    response_model=SessionResponse,
+    summary="根据会话首条消息智能生成标题并更新",
+)
+async def generate_title_endpoint(
+    session_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session_repo: SessionRepository = Depends(get_session_repo),
+    message_repo: MessageRepository = Depends(get_message_repo),
+):
+    from services.chat_service import chat_service
+
+    db_res = await message_repo.list_by_session(user.id, session_id, limit=5)
+    msgs = db_res[0] if isinstance(db_res, tuple) else db_res
+    first_user_msg = next((m for m in msgs if m.get("role") == "user"), None)
+    if not first_user_msg or not first_user_msg.get("content"):
+        current = await session_repo.get_by_id(user.id, session_id)
+        return current
+
+    new_title = await chat_service.generate_session_title(
+        content=first_user_msg["content"],
+        model="deepseek-chat",
+    )
+    if new_title:
+        updated = await session_repo.update(
+            user.id, session_id, SessionUpdate(title=new_title)
+        )
+        return updated
+
+    return await session_repo.get_by_id(user.id, session_id)
+

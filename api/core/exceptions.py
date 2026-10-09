@@ -24,9 +24,27 @@ class AppException(HTTPException):
         self,
         code: ErrorCode,
         message: str,
-        status_code: int = status.HTTP_400_BAD_REQUEST,
+        status_code: Optional[int] = None,
         details: Optional[Any] = None,
     ):
+        if status_code is None:
+            if code in (
+                ErrorCode.NOT_FOUND,
+                ErrorCode.SESSION_NOT_FOUND,
+                ErrorCode.SKILL_NOT_FOUND,
+            ):
+                status_code = status.HTTP_404_NOT_FOUND
+            elif code == ErrorCode.UNAUTHORIZED:
+                status_code = status.HTTP_401_UNAUTHORIZED
+            elif code == ErrorCode.FORBIDDEN:
+                status_code = status.HTTP_403_FORBIDDEN
+            elif code == ErrorCode.VALIDATION_ERROR:
+                status_code = status.HTTP_400_BAD_REQUEST
+            elif code == ErrorCode.INTERNAL_SERVER_ERROR:
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            else:
+                status_code = status.HTTP_400_BAD_REQUEST
+
         super().__init__(
             status_code=status_code,
             detail={

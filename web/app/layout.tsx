@@ -24,9 +24,28 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" data-density="comfortable">
+    <html lang="zh-CN" data-density="comfortable" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              if (typeof window !== 'undefined') {
+                window.addEventListener('error', function(e) {
+                  if (e.message && (
+                    e.message.includes('ResizeObserver') ||
+                    e.message.includes('Hydration')
+                  )) {
+                    e.stopImmediatePropagation();
+                  }
+                });
+              }
+            `,
+          }}
+        />
+      </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} font-sans bg-void text-genesis-primary antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} font-sans bg-canvas text-[#ECECEE] antialiased`}
+        suppressHydrationWarning
       >
         {children}
       </body>
