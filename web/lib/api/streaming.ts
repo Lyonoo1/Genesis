@@ -9,7 +9,13 @@ export type SSEEventType =
   | "text_delta"
   | "step_finish"
   | "usage"
+  | "workbench_preview"
+  | "workbench_file_change"
+  | "workbench_todos"
+  | "subagent_progress"
+  | "mid_task_steered"
   | "done"
+  | "permission_request"
   | "error";
 
 export interface SessionInfoPayload {
@@ -31,10 +37,24 @@ export interface ToolStartPayload {
 
 export interface ToolResultPayload {
   tool_call_id: string;
+  agent_id?: string;
+  name?: string;
   output?: unknown;
   result?: unknown;
   latency_ms?: number;
   is_error?: boolean;
+}
+
+export interface PermissionRequestPayload {
+  approval_id?: string;
+  session_id?: string;
+  tool_name?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+  args?: Record<string, unknown>;
+  reason?: string;
+  tool_call_id?: string;
+  step?: number;
 }
 
 export interface ReasoningDeltaPayload {
@@ -57,6 +77,48 @@ export interface ErrorPayload {
   message: string;
 }
 
+export interface WorkbenchPreviewPayload {
+  url: string;
+  port?: number | null;
+}
+
+export interface WorkbenchFileChangePayload {
+  path: string;
+  name?: string;
+  unified_diff?: string;
+  diff?: string;
+  additions?: number;
+  deletions?: number;
+  original_content?: string;
+  modified_content?: string;
+}
+
+export interface WorkbenchTodosPayload {
+  session_id: string;
+  todos: Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }>;
+  step?: number;
+}
+
+export interface SubagentProgressPayload {
+  event: string;
+  agent_id?: string;
+  agent_type: string;
+  task_prompt?: string;
+  step?: number;
+  max_steps?: number;
+  status: string;
+  tool_calls?: string[];
+  summary_preview?: string;
+  thinking?: string;
+  thinking_content?: string;
+}
+
+export interface MidTaskSteeredPayload {
+  session_id: string;
+  content: string;
+  step?: number;
+}
+
 export type SSEEventCallback =
   | { event: "session_info"; data: SessionInfoPayload }
   | { event: "session_title_updated"; data: SessionTitleUpdatedPayload }
@@ -64,10 +126,16 @@ export type SSEEventCallback =
   | { event: "tool_call_start"; data: ToolStartPayload }
   | { event: "tool_result"; data: ToolResultPayload }
   | { event: "tool_call_result"; data: ToolResultPayload }
+  | { event: "permission_request"; data: PermissionRequestPayload }
   | { event: "reasoning_delta"; data: ReasoningDeltaPayload }
   | { event: "text_delta"; data: TextDeltaPayload }
   | { event: "step_finish"; data: Record<string, unknown> }
   | { event: "usage"; data: UsagePayload }
+  | { event: "workbench_preview"; data: WorkbenchPreviewPayload }
+  | { event: "workbench_file_change"; data: WorkbenchFileChangePayload }
+  | { event: "workbench_todos"; data: WorkbenchTodosPayload }
+  | { event: "subagent_progress"; data: SubagentProgressPayload }
+  | { event: "mid_task_steered"; data: MidTaskSteeredPayload }
   | { event: "done"; data: Record<string, unknown> }
   | { event: "error"; data: ErrorPayload };
 

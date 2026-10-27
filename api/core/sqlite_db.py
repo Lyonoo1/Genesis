@@ -1,14 +1,23 @@
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-DB_PATH = Path(__file__).resolve().parent.parent / "genesis.db"
+DB_PATH = Path(
+    os.environ.get(
+        "SQLITE_DB_PATH",
+        str(Path(__file__).resolve().parent.parent / "genesis.db"),
+    )
+)
 
 
 def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn = sqlite3.connect(str(DB_PATH), timeout=30.0, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -81,6 +90,10 @@ def init_sqlite_db() -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at ASC);"
         )
+        try:
+            cursor.execute("ALTER TABLE messages ADD COLUMN metrics TEXT;")
+        except Exception:
+            pass
 
         # 4. 模型配置表 (Model Configs)
         cursor.execute(
@@ -345,6 +358,12 @@ def db_list_messages(
                     raw_tools = json.loads(r["raw_tool_calls"])
                 except Exception:
                     raw_tools = []
+            metrics_obj = None
+            if "metrics" in r.keys() and r["metrics"]:
+                try:
+                    metrics_obj = json.loads(r["metrics"])
+                except Exception:
+                    metrics_obj = None
             result.append(
                 {
                     "id": r["id"],
@@ -358,6 +377,7 @@ def db_list_messages(
                     "tool_call_id": r["tool_call_id"],
                     "active_skill_id": r["active_skill_id"],
                     "status": r["status"],
+                    "metrics": metrics_obj,
                     "created_at": r["created_at"],
                 }
             )
@@ -372,18 +392,22 @@ def db_create_message(data: dict[str, Any]) -> dict[str, Any]:
         raw_tools_str = None
         if data.get("raw_tool_calls") is not None:
             raw_tools_str = json.dumps(data["raw_tool_calls"], ensure_ascii=False)
+        metrics_str = None
+        if data.get("metrics") is not None:
+            metrics_str = json.dumps(data["metrics"], ensure_ascii=False)
 
         cursor.execute(
             """
             INSERT INTO messages (id, session_id, user_id, parent_id, role, content,
                                   reasoning_content, raw_tool_calls, tool_call_id,
-                                  active_skill_id, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  active_skill_id, status, metrics, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 content = excluded.content,
                 reasoning_content = excluded.reasoning_content,
                 raw_tool_calls = excluded.raw_tool_calls,
-                status = excluded.status
+                status = excluded.status,
+                metrics = coalesce(excluded.metrics, messages.metrics)
             """,
             (
                 str(data["id"]),
@@ -397,6 +421,7 @@ def db_create_message(data: dict[str, Any]) -> dict[str, Any]:
                 data.get("tool_call_id"),
                 str(data["active_skill_id"]) if data.get("active_skill_id") else None,
                 data.get("status").value if hasattr(data.get("status"), "value") else str(data.get("status", "success")),
+                metrics_str,
                 data.get("created_at") or now,
             ),
         )
@@ -407,6 +432,19 @@ def db_create_message(data: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
         return data
+
+
+def db_update_message_metrics(message_id: str, metrics: dict[str, Any]) -> bool:
+    """更新消息的指标数据（总耗时、Token 用量等）"""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        metrics_str = json.dumps(metrics, ensure_ascii=False) if metrics else None
+        cursor.execute(
+            "UPDATE messages SET metrics = ? WHERE id = ?",
+            (metrics_str, str(message_id)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 def db_prune_messages(session_id: str, user_id: str, parent_id: str) -> int:

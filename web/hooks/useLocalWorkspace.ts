@@ -60,9 +60,12 @@ export function useLocalWorkspace(projectId: string | null) {
       if (hasPermission) {
         setStatus("CONNECTED");
         setIsScanning(true);
-        const tree = await scanDirectory(handle);
-        setFileTree(tree);
-        setIsScanning(false);
+        try {
+          const tree = await scanDirectory(handle);
+          setFileTree(tree);
+        } finally {
+          setIsScanning(false);
+        }
       } else {
         // 同一设备：句柄存在但浏览器需要用户点击确认唤醒
         setStatus("NEED_PERMISSION");
@@ -97,9 +100,13 @@ export function useLocalWorkspace(projectId: string | null) {
       setStatus("CONNECTED");
 
       setIsScanning(true);
-      const tree = await scanDirectory(handle);
-      setFileTree(tree);
-      setIsScanning(false);
+      let tree: WorkspaceFileNode[] = [];
+      try {
+        tree = await scanDirectory(handle);
+        setFileTree(tree);
+      } finally {
+        setIsScanning(false);
+      }
 
       // 默认选中第一个文件
       const firstFile = findFirstFile(tree);
@@ -125,9 +132,13 @@ export function useLocalWorkspace(projectId: string | null) {
       if (granted) {
         setStatus("CONNECTED");
         setIsScanning(true);
-        const tree = await scanDirectory(rootHandle);
-        setFileTree(tree);
-        setIsScanning(false);
+        let tree: WorkspaceFileNode[] = [];
+        try {
+          tree = await scanDirectory(rootHandle);
+          setFileTree(tree);
+        } finally {
+          setIsScanning(false);
+        }
 
         if (activeFilePath) {
           selectFile(activeFilePath, rootHandle);
@@ -181,7 +192,7 @@ export function useLocalWorkspace(projectId: string | null) {
   };
 
   // 7. 刷新目录树
-  const refreshTree = async () => {
+  const refreshTree = useCallback(async () => {
     if (!rootHandle) return;
     setIsScanning(true);
     try {
@@ -190,7 +201,19 @@ export function useLocalWorkspace(projectId: string | null) {
     } finally {
       setIsScanning(false);
     }
-  };
+  }, [rootHandle]);
+
+  // 8. 监听全局工作区变更事件 (例如 Agent 执行了删除或写入文件)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleWorkspaceRefresh = () => {
+      refreshTree();
+    };
+    window.addEventListener("genesis:workspace-refresh", handleWorkspaceRefresh);
+    return () => {
+      window.removeEventListener("genesis:workspace-refresh", handleWorkspaceRefresh);
+    };
+  }, [refreshTree]);
 
   return {
     status,
@@ -202,6 +225,7 @@ export function useLocalWorkspace(projectId: string | null) {
     activeFileSize,
     isLoadingFile,
     attachDirectory,
+    switchDirectory: attachDirectory,
     requestAccess,
     disconnect,
     selectFile,

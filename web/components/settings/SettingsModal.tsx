@@ -11,7 +11,6 @@ import {
   Archive,
   Check,
   Plus,
-  RotateCcw,
   Trash2,
   Folder,
   MoreHorizontal,
@@ -50,7 +49,6 @@ export function SettingsModal() {
     projects,
     unarchiveSession,
     deleteSession,
-    unarchiveProject,
     deleteProject,
   } = useSessionStore();
   const [searchQuery, setSearchQuery] = useState("");

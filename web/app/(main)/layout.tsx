@@ -6,9 +6,20 @@ import { Folder, PanelRight, PanelRightClose, PanelLeft, PanelLeftOpen, Search }
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useUIStore } from "@/stores/useUIStore";
+import { useWorkbenchStore } from "@/stores/useWorkbenchStore";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { RightSidebar } from "@/components/inspector/RightSidebar";
 import { supabase } from "@/lib/supabase/client";
+import dynamic from "next/dynamic";
+
+const TerminalPanel = dynamic(
+  () =>
+    import("@/components/terminal/TerminalPanel").then(
+      (mod) => mod.TerminalPanel
+    ),
+  { ssr: false }
+);
+
 
 export default function MainLayout({
   children,
@@ -18,12 +29,14 @@ export default function MainLayout({
   const router = useRouter();
   const pathname = usePathname() || "";
   const { sessions, activeSessionId, openHistoryModal } = useSessionStore();
+  const { isMaximized } = useWorkbenchStore();
   const {
     isRightSidebarOpen,
     toggleRightSidebar,
     isLeftSidebarOpen,
     toggleLeftSidebar,
     setLeftSidebarHovered,
+    toggleTerminal,
   } = useUIStore();
 
   // 双向互锁防抖，彻底消除 Hover 抽搐抖动
@@ -38,6 +51,11 @@ export default function MainLayout({
   const activeSession = (sessions || []).find(
     (s) => s && s.id === currentSessionId && !s.is_archived
   );
+
+  // 随着会话切换无缝切换右侧工作台（各会话 Tabs 独立隔离）
+  useEffect(() => {
+    useWorkbenchStore.getState().switchSessionWorkbench(currentSessionId);
+  }, [currentSessionId]);
 
   // 保持滑动无感续期与多账号切换数据隔离，并监听跨 Tab 登出广播
   useEffect(() => {
@@ -157,10 +175,13 @@ export default function MainLayout({
     toggleLeftSidebar();
   };
 
-  // 全局 ⌘, 与 ⌘B 快捷键监听
+  // 全局 ⌘, 与 ⌘B 快捷键监听，以及 ^` 终端快捷键
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "`" || e.code === "Backquote")) {
+        e.preventDefault();
+        toggleTerminal();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
         if (pathname.startsWith("/settings")) {
           router.push("/chat");
@@ -174,7 +195,7 @@ export default function MainLayout({
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [pathname, router, toggleLeftSidebar]);
+  }, [pathname, router, toggleLeftSidebar, toggleTerminal]);
 
   // 如果处于 /settings 路由，整页独占渲染 Codex 风格全屏设置页面
   if (pathname.startsWith("/settings")) {
@@ -245,21 +266,22 @@ export default function MainLayout({
       />
 
       {/* 2. 主工作区：水平布局 (左侧主聊天区，右侧全高度检查器侧边栏) */}
-      <div className="flex-1 flex flex-row min-w-0 h-full overflow-hidden bg-[#161618]">
-        {/* 2.1 左侧主内容区 (包含顶部栏与内容舞台) */}
-        <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-[#161618]">
+      <div className="flex-1 flex flex-row min-w-0 h-full overflow-hidden bg-[#161618] relative">
+        {/* 2.1 左侧主内容区 (包含顶部栏与内容舞台，设置 400px 最小宽度保护；最大化时隐藏防止闪跳) */}
+        <div
+          id="main-chat-container"
+          className={`flex-1 flex flex-col min-w-[400px] h-full overflow-hidden bg-[#161618] ${
+            isMaximized ? "hidden" : ""
+          }`}
+        >
           {/* 顶部标题栏：纯黑色调无缝贯通 */}
           {pathname !== "/login" && !pathname.startsWith("/marketplace") && (
             <header
-              className={`relative z-10 h-11 px-4 flex items-center shrink-0 bg-[#161618] border-b border-[#27272A]/80 transition-all duration-[600ms] ease-out ${
-                isRightSidebarOpen
-                  ? "opacity-0 pointer-events-none"
-                  : "opacity-100 pointer-events-auto"
-              }`}
+              className="relative z-10 h-11 px-4 flex items-center shrink-0 bg-[#161618] border-b border-white/[0.06] transition-all duration-500 ease-out"
             >
               {/* 会话信息：收起时紧跟搜索按钮右侧，展开时 margin 归零 */}
               <div
-                className={`flex items-center gap-2 min-w-0 transition-[margin] duration-[600ms] ease-out ${
+                className={`flex items-center gap-2 min-w-0 transition-[margin] duration-500 ease-out ${
                   !isLeftSidebarOpen ? "ml-[58px]" : "ml-0"
                 }`}
               >
@@ -281,23 +303,19 @@ export default function MainLayout({
           </main>
         </div>
 
-        {/* 2.2 Codex 风格右侧侧边栏 */}
+        {/* 2.2 Codex 同款一体化工作台 (整合多Tab、实时Markdown排版、智能Diff、VS Code唤醒与并排文件树) */}
         <RightSidebar />
       </div>
 
-      {/* 全局固定右侧边栏切换按钮：fixed 定位，始终在同一屏幕坐标，图标随开关状态切换 */}
-      {pathname !== "/login" && !pathname.startsWith("/marketplace") && (
+      {/* 当右侧边栏收起时，全局右上角常驻展开按钮：支持包括 /marketplace 在内的所有页面 */}
+      {pathname !== "/login" && !isRightSidebarOpen && (
         <button
           type="button"
           onClick={toggleRightSidebar}
-          title={isRightSidebarOpen ? "收起侧边栏" : "展开侧边栏"}
-          className="fixed top-2 right-2.5 z-[60] w-7 h-7 flex items-center justify-center rounded-md text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+          title="展开侧边栏"
+          className="fixed top-2 right-2.5 z-40 w-7 h-7 flex items-center justify-center rounded-md text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
         >
-          {isRightSidebarOpen ? (
-            <PanelRightClose className="w-4 h-4" />
-          ) : (
-            <PanelRight className="w-4 h-4" />
-          )}
+          <PanelRight className="w-4 h-4" />
         </button>
       )}
     </div>

@@ -1,9 +1,8 @@
-import { getAuthToken } from "./client";
+import { getAuthToken, getApiBaseUrl } from "./client";
 import { parseSSEStream, SSEEventHandler } from "./streaming";
 import { Message } from "@/types";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+const API_BASE_URL = getApiBaseUrl();
 
 interface SendMessageStreamParams {
   sessionId: string;
@@ -94,6 +93,29 @@ export async function sendMessageStream({
 }
 
 /**
+ * 运行中实时插话 (Mid-task Steering)：不中断当前工具或流式生成，将指令排队在下一步生效
+ */
+export async function steerChatApi(
+  sessionId: string,
+  content: string
+): Promise<{ success: boolean; message: string }> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/chat/${sessionId}/steer`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`插话请求失败 (HTTP ${res.status}): ${errText}`);
+  }
+  return res.json();
+}
+
+/**
  * 向后端广播中止信号
  */
 export async function stopGenerationApi(sessionId: string): Promise<void> {
@@ -109,6 +131,77 @@ export async function stopGenerationApi(sessionId: string): Promise<void> {
   } catch (err) {
     console.warn("Failed to notify backend stop endpoint:", err);
   }
+}
+
+/**
+ * 向后端提交权限审批决议（允许/拒绝高危操作）
+ */
+export async function approveToolCallApi(
+  sessionId: string,
+  approvalId: string,
+  approved: boolean
+): Promise<{ status: string }> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/chat/${sessionId}/approve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      approval_id: approvalId,
+      tool_call_id: approvalId,
+      approved,
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Failed to send approval: ${res.status} ${errText}`);
+  }
+
+  return res.json();
+}
+
+/**
+ * 终止指定的后台守护进程
+ */
+export async function stopProcessApi(pid: number): Promise<{ success: boolean; pid: number; message: string }> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/chat/processes/${pid}/stop`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Failed to stop process ${pid}: ${res.status} ${errText}`);
+  }
+
+  return res.json();
+}
+
+/**
+ * 获取所有正在运行的后台守护进程列表 (支持按当前会话 session_id 过滤)
+ */
+export async function listProcessesApi(sessionId?: string): Promise<{ success: boolean; processes: Array<{ pid: number; command: string; session_id?: string }> }> {
+  const token = getAuthToken();
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  const res = await fetch(`${API_BASE_URL}/api/chat/processes${query}`, {
+    method: "GET",
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to list processes: ${res.status}`);
+  }
+
+  return res.json();
 }
 
 /**
@@ -239,3 +332,29 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
     });
   });
 }
+
+/**
+ * 撤销指定的代码变更并恢复原内容
+ */
+export async function revertFilesApi(
+  files: Array<{ path: string; original_content: string }>,
+  sessionId?: string
+): Promise<{ success: boolean; reverted: string[] }> {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE_URL}/api/chat/revert`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ files, session_id: sessionId }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Failed to revert files: ${res.status} ${errText}`);
+  }
+
+  return res.json();
+}
+

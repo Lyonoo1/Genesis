@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ModelSelectorPopover } from "./ModelSelectorPopover";
+import { RunningTasksBanner } from "./RunningTasksBanner";
+import { SteeringQueueDrawer } from "./SteeringQueueDrawer";
 import { useChatStore } from "@/stores/useChatStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useModelConfigStore } from "@/stores/useModelConfigStore";
@@ -33,7 +35,7 @@ export function ChatInputBar({
   scrollbarWidth = 0,
 }: ChatInputBarProps) {
   const router = useRouter();
-  const { sendStreamMessage, stopGeneration, isStreaming } = useChatStore();
+  const { sendStreamMessage, enqueueSteering, stopGeneration, isStreaming } = useChatStore();
   const {
     activeProjectId,
     reasoningEffort,
@@ -135,7 +137,20 @@ export function ChatInputBar({
     }
 
     const trimmed = text.trim();
-    if (!trimmed || isStreaming) return;
+    if (!trimmed) return;
+
+    // 运行中实时插话 (Mid-task Steering)：不中断当前任务，加入 Codex 悬浮排队托盘
+    if (isStreaming) {
+      if (sessionId) {
+        await enqueueSteering(sessionId, trimmed);
+        setText("");
+        setIsOverflowing(false);
+        if (textareaRef.current) {
+          textareaRef.current.style.height = "auto";
+        }
+      }
+      return;
+    }
 
     setText("");
     setIsOverflowing(false);
@@ -227,10 +242,23 @@ export function ChatInputBar({
         {/* 输入框主区：仅保留底部安全边距，无任何顶部 padding */}
         <div className="relative z-10 w-full pb-6 px-4 md:px-6 pointer-events-none">
           <div className="max-w-3xl mx-auto relative pointer-events-auto flex flex-col items-start w-full">
+            {/* 排队托盘 (对标图 4 & 图 5：悬浮贴附于输入框正上方) */}
+            <SteeringQueueDrawer
+              sessionId={sessionId}
+              onFillText={(val) => {
+                setText(val);
+                adjustHeight();
+              }}
+            />
+
             {/* 主输入卡片容器：截图同款 #2A2A2A 质感与圆角，无中部分割线 */}
-            <div className="w-full rounded-[20px] border border-[#383838]/60 bg-[#2A2A2A] shadow-[0_12px_36px_rgba(0,0,0,0.55)] p-3 transition-all duration-200 focus-within:border-[#484848] focus-within:ring-1 focus-within:ring-white/[0.08]">
-            {/* 自适应输入框容器 (超出滚动时带上下玻璃模糊遮罩) */}
-            <div className="relative w-full">
+            <div className="w-full rounded-[20px] border border-[#383838]/60 bg-[#2A2A2A] shadow-[0_12px_36px_rgba(0,0,0,0.55)] transition-all duration-200 focus-within:border-[#484848] focus-within:ring-1 focus-within:ring-white/[0.08] relative">
+              {/* 运行中后台服务栏 (如有服务正在运行，贴合显示在输入框顶部) */}
+              <RunningTasksBanner sessionId={sessionId} />
+
+              <div className="p-3">
+                {/* 自适应输入框容器 (超出滚动时带上下玻璃模糊遮罩) */}
+                <div className="relative w-full">
               <textarea
                 ref={textareaRef}
                 rows={1}
@@ -250,6 +278,8 @@ export function ChatInputBar({
                 placeholder={
                   mounted && !isModelConfigured
                     ? "未配置模型，请点击右下角“未配置模型”完成配置"
+                    : isStreaming
+                    ? "Agent 正在执行... 可输入排队消息（可在上方排队托盘随时点击“↳ 引导”立即抢占回答）"
                     : "随心输入"
                 }
                 className="w-full min-h-[38px] max-h-[260px] bg-transparent text-[14.5px] text-white placeholder:text-[#8E8E93] outline-none resize-none leading-relaxed px-2 py-1 font-sans scrollbar-none"
@@ -391,36 +421,45 @@ export function ChatInputBar({
                   <Mic className="w-4 h-4 stroke-[1.8]" />
                 </button>
 
-                {/* 发送 / 终止按钮 (截图同款 #2C67C5 深蓝圆形) */}
-                {isStreaming ? (
-                  <button
-                    type="button"
-                    onClick={() => sessionId && stopGeneration(sessionId)}
-                    className="w-8 h-8 rounded-full bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#F43F5E] flex items-center justify-center transition-all cursor-pointer shadow-sm active:scale-95"
-                    title="停止生成"
-                  >
-                    <Square className="w-3.5 h-3.5 fill-current" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleSend}
-                    disabled={!isModelConfigured || !text.trim()}
-                    className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
-                      isModelConfigured && text.trim()
-                        ? "bg-[#2C67C5] hover:bg-[#255CBA] text-white shadow-[0_2px_10px_rgba(44,103,197,0.4)] cursor-pointer active:scale-95"
-                        : "bg-[#38383E] text-[#71717A] cursor-not-allowed opacity-60"
-                    }`}
-                    title={
-                      !isModelConfigured
-                        ? "未配置模型，无法发送 (请点击左侧“未配置模型”完成配置)"
-                        : "发送 (Enter 发送，Shift + Enter 换行)"
-                    }
-                  >
-                    <ArrowUp className="w-4 h-4 stroke-[2.4]" />
-                  </button>
-                )}
+                {/* 发送 / 终止 / 插话按钮组 */}
+                <div className="flex items-center gap-1.5">
+                  {isStreaming && (
+                    <button
+                      type="button"
+                      onClick={() => sessionId && stopGeneration(sessionId)}
+                      className="w-8 h-8 rounded-full bg-[#F43F5E]/20 hover:bg-[#F43F5E]/30 border border-[#F43F5E]/40 text-[#F43F5E] flex items-center justify-center transition-all cursor-pointer shadow-sm active:scale-95"
+                      title="停止生成 (强制终止当前任务)"
+                    >
+                      <Square className="w-3.5 h-3.5 fill-current" />
+                    </button>
+                  )}
+
+                  {(!isStreaming || text.trim().length > 0) && (
+                    <button
+                      type="button"
+                      onClick={handleSend}
+                      disabled={!isModelConfigured || !text.trim()}
+                      className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
+                        isModelConfigured && text.trim()
+                          ? isStreaming
+                            ? "bg-[#D97706] hover:bg-[#B45309] text-white shadow-[0_2px_10px_rgba(217,119,6,0.4)] cursor-pointer active:scale-95"
+                            : "bg-[#2C67C5] hover:bg-[#255CBA] text-white shadow-[0_2px_10px_rgba(44,103,197,0.4)] cursor-pointer active:scale-95"
+                          : "bg-[#38383E] text-[#71717A] cursor-not-allowed opacity-60"
+                      }`}
+                      title={
+                        !isModelConfigured
+                          ? "未配置模型，无法发送 (请点击左侧“未配置模型”完成配置)"
+                          : isStreaming
+                          ? "加入排队队列 (Enter 发送，可在上方排队托盘点击“↳ 引导”立即抢占打断并回答)"
+                          : "发送 (Enter 发送，Shift + Enter 换行)"
+                      }
+                    >
+                      <ArrowUp className="w-4 h-4 stroke-[2.4]" />
+                    </button>
+                  )}
+                </div>
               </div>
+            </div>
             </div>
           </div>
         </div>

@@ -59,9 +59,19 @@ clean:
 	rm -rf /tmp/genesis/sandboxes/*
 	@echo "清理完成。"
 
-# Docker 容器编排
+# Docker 容器编排 (开发环境)
 docker-up:
 	docker compose up --build -d
 
 docker-down:
 	docker compose down
+
+# 生产环境发布编排 (包含 Nginx 反向代理与持久化挂载)
+prod-up:
+	docker compose -f docker-compose.prod.yml up --build -d
+
+prod-down:
+	docker compose -f docker-compose.prod.yml down
+
+prod-logs:
+	docker compose -f docker-compose.prod.yml logs -f --tail=100

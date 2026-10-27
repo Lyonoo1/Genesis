@@ -9,11 +9,9 @@ import {
   Archive,
   Trash2,
   Clock,
-  Layers,
 } from "lucide-react";
-import { Session, Project } from "@/types";
+import { Session } from "@/types";
 import { useSessionStore } from "@/stores/useSessionStore";
-import { getProjectIconComponent } from "./EditProjectModal";
 
 interface EditSessionModalProps {
   session: Session | null;

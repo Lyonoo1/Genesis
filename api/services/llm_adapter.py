@@ -101,9 +101,16 @@ class LLMAdapter:
             "Content-Type": "application/json",
         }
 
-        is_reasoning_model = any(
-            k in model.lower()
-            for k in ["reasoner", "r1", "o1", "o3", "deepseek-reasoner", "deepseek-flash"]
+        model_name = model.lower()
+        is_o_series = (
+            model_name.startswith(("o1", "o3", "o4"))
+            or "/o1" in model_name
+            or "/o3" in model_name
+            or "/o4" in model_name
+        )
+        is_reasoning_model = is_o_series or any(
+            k in model_name
+            for k in ["reasoner", "r1", "deepseek-reasoner", "deepseek-flash"]
         )
 
         # 自动安全自适应：防止 max_tokens 超出大模型上游的最大输出上限或导致网络超时
@@ -112,13 +119,13 @@ class LLMAdapter:
         # OpenAI GPT-4o 4096~16384
         safe_max_tokens = max_tokens
         if not safe_max_tokens or safe_max_tokens > 65536:
-            if any(k in model.lower() for k in ["deepseek", "r1"]):
+            if any(k in model_name for k in ["deepseek", "r1"]):
                 safe_max_tokens = 32768
-            elif any(k in model.lower() for k in ["claude", "anthropic"]):
+            elif any(k in model_name for k in ["claude", "anthropic"]):
                 safe_max_tokens = 8192
-            elif any(k in model.lower() for k in ["o1", "o3"]):
+            elif is_o_series or any(k in model_name for k in ["o1", "o3", "o4"]):
                 safe_max_tokens = 32768
-            elif any(k in model.lower() for k in ["gpt-4o"]):
+            elif any(k in model_name for k in ["gpt-4o"]):
                 safe_max_tokens = 16384
             else:
                 safe_max_tokens = 32768
@@ -127,13 +134,26 @@ class LLMAdapter:
         if safe_max_tokens and safe_max_tokens > 393216:
             safe_max_tokens = 393216
 
+        # 清洗消息中的非标准字段（如 is_error），避免严格上游/代理网关报错 HTTP 400
+        clean_messages: list[dict[str, Any]] = []
+        for m in messages:
+            clean_m = dict(m)
+            clean_m.pop("is_error", None)
+            clean_messages.append(clean_m)
+
         payload: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": clean_messages,
             "stream": True,
-            "max_tokens": safe_max_tokens,
             "stream_options": {"include_usage": True},
         }
+
+        # OpenAI o1/o3/o4 推理模型参数适配：max_completion_tokens 替代 max_tokens，并移除 temperature
+        if is_o_series:
+            payload["max_completion_tokens"] = safe_max_tokens
+        else:
+            payload["max_tokens"] = safe_max_tokens
+
         if not is_reasoning_model:
             payload["temperature"] = temperature
         if tools:
@@ -262,6 +282,232 @@ class LLMAdapter:
             output_tokens=output_tokens,
         )
 
+    @classmethod
+    def convert_to_anthropic_messages(
+        cls,
+        messages: list[dict[str, Any]],
+    ) -> tuple[Optional[str], list[dict[str, Any]]]:
+        """将通用消息格式转换为 Anthropic 规范格式，执行严格角色交替、多工具合并与提示词缓存断点注入"""
+        system_prompts: list[str] = []
+        raw_non_system: list[dict[str, Any]] = []
+
+        for m in messages:
+            role = m.get("role")
+            if role == "system":
+                c = m.get("content") or ""
+                if isinstance(c, list):
+                    for b in c:
+                        if isinstance(b, dict):
+                            t = b.get("text") or b.get("content") or ""
+                            if t:
+                                system_prompts.append(str(t).strip())
+                        else:
+                            system_prompts.append(str(b).strip())
+                elif isinstance(c, str):
+                    if c.strip():
+                        system_prompts.append(c.strip())
+                else:
+                    system_prompts.append(str(c).strip())
+            else:
+                raw_non_system.append(m)
+
+        system_text = "\n\n".join(system_prompts).strip() if system_prompts else None
+
+        converted_items: list[dict[str, Any]] = []
+        for m in raw_non_system:
+            role = m.get("role")
+            content = m.get("content")
+
+            if role == "tool":
+                # 工具调用返回结果 -> role: "user", block: "tool_result"
+                if content is None:
+                    tool_content: Any = ""
+                elif isinstance(content, str):
+                    tool_content = content
+                elif isinstance(content, list) and all(isinstance(x, dict) and "type" in x for x in content):
+                    tool_content = content
+                elif isinstance(content, (dict, list)):
+                    tool_content = json.dumps(content, ensure_ascii=False)
+                else:
+                    tool_content = str(content)
+
+                tool_block: dict[str, Any] = {
+                    "type": "tool_result",
+                    "tool_use_id": m.get("tool_call_id") or "unknown_call",
+                    "content": tool_content,
+                }
+                if m.get("is_error") or str(m.get("status", "")).lower() == "failed":
+                    tool_block["is_error"] = True
+                converted_items.append({"role": "user", "content": [tool_block]})
+
+            elif role == "user":
+                if isinstance(content, list):
+                    blocks = []
+                    for b in content:
+                        if isinstance(b, dict):
+                            b_copy = dict(b)
+                            b_copy.pop("cache_control", None)
+                            blocks.append(b_copy)
+                        else:
+                            blocks.append({"type": "text", "text": str(b)})
+                    converted_items.append({"role": "user", "content": blocks})
+                else:
+                    text_str = str(content) if content is not None else ""
+                    converted_items.append({"role": "user", "content": [{"type": "text", "text": text_str}]})
+
+            elif role == "assistant":
+                blocks: list[dict[str, Any]] = []
+                if content:
+                    if isinstance(content, list):
+                        for b in content:
+                            if isinstance(b, dict):
+                                b_copy = dict(b)
+                                b_copy.pop("cache_control", None)
+                                blocks.append(b_copy)
+                            else:
+                                blocks.append({"type": "text", "text": str(b)})
+                    else:
+                        blocks.append({"type": "text", "text": str(content)})
+
+                tool_calls = m.get("tool_calls") or m.get("raw_tool_calls")
+                if tool_calls and isinstance(tool_calls, list):
+                    existing_tc_ids = {
+                        b.get("id")
+                        for b in blocks
+                        if isinstance(b, dict) and b.get("type") == "tool_use"
+                    }
+                    for tc in tool_calls:
+                        if hasattr(tc, "model_dump"):
+                            tc = tc.model_dump()
+                        elif hasattr(tc, "__dict__"):
+                            tc = tc.__dict__
+                        if not isinstance(tc, dict):
+                            continue
+
+                        tc_id = tc.get("id") or "tool_call"
+                        if tc_id in existing_tc_ids:
+                            continue
+
+                        if "function" in tc and isinstance(tc["function"], dict):
+                            fn_name = tc["function"].get("name") or "unknown_tool"
+                            raw_args = tc["function"].get("arguments") or {}
+                        else:
+                            fn_name = tc.get("name") or "unknown_tool"
+                            raw_args = tc.get("args") or tc.get("arguments") or {}
+
+                        if isinstance(raw_args, str):
+                            try:
+                                parsed_args = json.loads(raw_args)
+                            except Exception:
+                                parsed_args = {"raw": raw_args}
+                        elif isinstance(raw_args, dict):
+                            parsed_args = raw_args
+                        else:
+                            parsed_args = {}
+
+                        blocks.append(
+                            {
+                                "type": "tool_use",
+                                "id": tc_id,
+                                "name": fn_name,
+                                "input": parsed_args,
+                            }
+                        )
+                        existing_tc_ids.add(tc_id)
+
+                if not blocks:
+                    blocks.append({"type": "text", "text": " "})
+
+                converted_items.append({"role": "assistant", "content": blocks})
+
+        # 连续相同角色消息合并（多工具 tool 结果合并为单条 role: user 消息，严格交替）
+        merged_messages: list[dict[str, Any]] = []
+        for item in converted_items:
+            if not merged_messages:
+                merged_messages.append(item)
+            else:
+                last_msg = merged_messages[-1]
+                if last_msg["role"] == item["role"]:
+                    last_msg["content"].extend(item["content"])
+                else:
+                    merged_messages.append(item)
+
+        # 确保消息列表以 user 开头
+        if merged_messages and merged_messages[0]["role"] != "user":
+            merged_messages.insert(0, {"role": "user", "content": [{"type": "text", "text": "Continue"}]})
+        elif not merged_messages:
+            merged_messages.append({"role": "user", "content": [{"type": "text", "text": "Hello"}]})
+
+        # 清除历史旧 cache_control 标记，确保总断点数 <= 4
+        for msg in merged_messages:
+            for b in msg.get("content", []):
+                if isinstance(b, dict):
+                    b.pop("cache_control", None)
+
+        # 断点 3 & 4：找到转换后 messages 列表中最后两条 role == "user" 的消息，在各自最后一个 block 上注入 ephemeral 缓存标记
+        user_indices = [idx for idx, m in enumerate(merged_messages) if m.get("role") == "user"]
+        target_indices = user_indices[-2:] if len(user_indices) >= 2 else user_indices
+        for idx in target_indices:
+            user_msg = merged_messages[idx]
+            if user_msg.get("content"):
+                user_msg["content"][-1]["cache_control"] = {"type": "ephemeral"}
+
+        return system_text, merged_messages
+
+    @classmethod
+    def build_anthropic_system(
+        cls,
+        system_prompt: Optional[str],
+    ) -> Optional[list[dict[str, Any]]]:
+        """为 Anthropic 构建带断点 1 (cache_control) 的 system 块列表"""
+        if not system_prompt or not system_prompt.strip():
+            return None
+        return [
+            {
+                "type": "text",
+                "text": system_prompt.strip(),
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+    @classmethod
+    def convert_to_anthropic_tools(
+        cls,
+        tools: Optional[list[dict[str, Any]]],
+    ) -> Optional[list[dict[str, Any]]]:
+        """将通用 Tools 转换为 Anthropic 格式，并在最后一个工具定义上注入断点 2 的 cache_control"""
+        if not tools:
+            return None
+
+        anthropic_tools: list[dict[str, Any]] = []
+        for t in tools:
+            if hasattr(t, "model_dump"):
+                t = t.model_dump()
+            elif hasattr(t, "__dict__"):
+                t = t.__dict__
+
+            if not isinstance(t, dict):
+                continue
+
+            if "input_schema" in t:
+                tool_copy = dict(t)
+                tool_copy.pop("cache_control", None)
+                anthropic_tools.append(tool_copy)
+            else:
+                fn = t.get("function") or {}
+                anthropic_tools.append(
+                    {
+                        "name": fn.get("name") or t.get("name"),
+                        "description": fn.get("description") or t.get("description", ""),
+                        "input_schema": fn.get("parameters") or t.get("parameters") or {"type": "object", "properties": {}},
+                    }
+                )
+
+        if anthropic_tools:
+            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
+
+        return anthropic_tools or None
+
     async def _stream_anthropic(
         self,
         messages: list[dict[str, Any]],
@@ -285,41 +531,30 @@ class LLMAdapter:
         headers = {
             "x-api-key": active_key,
             "anthropic-version": "2023-06-01",
+            "anthropic-beta": "prompt-caching-2024-07-31",
             "content-type": "application/json",
         }
 
-        # 转换 system 消息
-        system_prompt = ""
-        user_assistant_messages = []
-        for m in messages:
-            if m["role"] == "system":
-                system_prompt += f"{m.get('content', '')}\n"
-            else:
-                user_assistant_messages.append(m)
+        # 1. 转换消息并注入断点 3 & 4 (严格角色交替与多工具合并)
+        system_prompt, anthropic_messages = self.convert_to_anthropic_messages(messages)
 
         anthropic_max_tokens = min(max_tokens or 8192, 8192)
         payload: dict[str, Any] = {
             "model": model,
-            "messages": user_assistant_messages,
+            "messages": anthropic_messages,
             "max_tokens": anthropic_max_tokens,
             "temperature": temperature,
             "stream": True,
         }
-        if system_prompt.strip():
-            payload["system"] = system_prompt.strip()
 
-        # 转换 tools 为 Anthropic 格式
-        if tools:
-            anthropic_tools = []
-            for t in tools:
-                fn = t.get("function") or {}
-                anthropic_tools.append(
-                    {
-                        "name": fn.get("name"),
-                        "description": fn.get("description", ""),
-                        "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
-                    }
-                )
+        # 2. 断点 1：在 system 块末尾注入 cache_control
+        anthropic_system = self.build_anthropic_system(system_prompt)
+        if anthropic_system:
+            payload["system"] = anthropic_system
+
+        # 3. 断点 2：在 tools 列表的最后一个工具定义上注入 cache_control
+        anthropic_tools = self.convert_to_anthropic_tools(tools)
+        if anthropic_tools:
             payload["tools"] = anthropic_tools
 
         url = f"{active_base.rstrip('/')}/messages"
@@ -357,7 +592,8 @@ class LLMAdapter:
                         if event_type == "message_start":
                             msg = event.get("message") or {}
                             usage = msg.get("usage") or {}
-                            input_tokens = usage.get("input_tokens", input_tokens)
+                            cached_tokens = (usage.get("cache_read_input_tokens") or 0) + (usage.get("cache_creation_input_tokens") or 0)
+                            input_tokens = usage.get("input_tokens", input_tokens) + cached_tokens
 
                         elif event_type == "content_block_start":
                             index = event.get("index", 0)
@@ -468,11 +704,21 @@ class LLMAdapter:
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     }
-                    payload = {
+                    model_name = model.lower()
+                    is_o_series = (
+                        model_name.startswith(("o1", "o3", "o4"))
+                        or "/o1" in model_name
+                        or "/o3" in model_name
+                        or "/o4" in model_name
+                    )
+                    payload: dict[str, Any] = {
                         "model": model,
                         "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 1,
                     }
+                    if is_o_series:
+                        payload["max_completion_tokens"] = 1
+                    else:
+                        payload["max_tokens"] = 1
                     resp = await client.post(url, json=payload, headers=headers)
 
                 latency_ms = int((time.time() - t0) * 1000)

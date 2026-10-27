@@ -9,12 +9,34 @@ interface AssistantActionBarProps {
     latency_ms?: number;
     tokens?: number;
   };
+  timestamp?: string;
   onRegenerate?: () => void;
+}
+
+function formatTimestamp(dateStr?: string): string | null {
+  if (!dateStr) return null;
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return null;
+
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const year = d.getFullYear();
+    const month = pad(d.getMonth() + 1);
+    const day = pad(d.getDate());
+    const hours = pad(d.getHours());
+    const minutes = pad(d.getMinutes());
+    const seconds = pad(d.getSeconds());
+
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  } catch {
+    return null;
+  }
 }
 
 export function AssistantActionBar({
   content,
   metrics,
+  timestamp,
   onRegenerate,
 }: AssistantActionBarProps) {
   const [copied, setCopied] = useState(false);
@@ -30,6 +52,7 @@ export function AssistantActionBar({
     }
   };
 
+  const formattedTime = formatTimestamp(timestamp);
   const formattedLatency =
     metrics?.latency_ms !== undefined
       ? `${(metrics.latency_ms / 1000).toFixed(1)}s`
@@ -38,8 +61,8 @@ export function AssistantActionBar({
     metrics?.tokens !== undefined ? `${metrics.tokens} tokens` : null;
 
   return (
-    <div className="h-6 mt-3 flex items-center justify-between text-[#71717A] select-none">
-      {/* 左侧操作按钮组 (截图同款极简风格) */}
+    <div className="h-6 mt-3 flex items-center text-[#71717A] select-none">
+      {/* 左侧操作按钮组与结束时间/耗时 */}
       <div className="flex items-center gap-0.5 -ml-1.5">
         <button
           onClick={handleCopy}
@@ -89,17 +112,20 @@ export function AssistantActionBar({
         >
           <ThumbsDown className="w-3.5 h-3.5 stroke-[1.8]" />
         </button>
+
+        {/* 点踩图标右侧：正常文字展示结束时间与纯耗时 */}
+        {(formattedTime || formattedLatency || formattedTokens) && (
+          <div className="flex items-center gap-1.5 ml-2 text-[11px] font-mono text-[#71717A]/80 tracking-tight">
+            {formattedTime && <span>{formattedTime}</span>}
+            {formattedTime && (formattedLatency || formattedTokens) && (
+              <span>·</span>
+            )}
+            {formattedLatency && <span>{formattedLatency}</span>}
+            {formattedLatency && formattedTokens && <span>·</span>}
+            {formattedTokens && <span>{formattedTokens}</span>}
+          </div>
+        )}
       </div>
-
-
-      {/* 右侧耗时与 Token 统计徽标 */}
-      {(formattedLatency || formattedTokens) && (
-        <div className="text-[10px] font-mono text-genesis-muted/70 tracking-tight flex items-center gap-1.5 px-2 py-0.5 rounded bg-white/[0.02] border border-hairline/40">
-          {formattedLatency && <span>{formattedLatency}</span>}
-          {formattedLatency && formattedTokens && <span>·</span>}
-          {formattedTokens && <span>{formattedTokens}</span>}
-        </div>
-      )}
     </div>
   );
 }

@@ -94,6 +94,7 @@ class MessageRepository:
             "tool_call_id": actual_in.tool_call_id,
             "active_skill_id": str(actual_in.active_skill_id) if actual_in.active_skill_id else None,
             "status": status_str,
+            "metrics": getattr(actual_in, "metrics", None),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -114,6 +115,11 @@ class MessageRepository:
                 pass
 
         return saved
+
+    async def update_metrics(self, message_id: Any, metrics: dict[str, Any]) -> bool:
+        """更新消息的指标数据"""
+        from core.sqlite_db import db_update_message_metrics
+        return db_update_message_metrics(str(message_id), metrics)
 
     async def prune_branch(
         self, session_id: Any, user_id: str, parent_id: Any

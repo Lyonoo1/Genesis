@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { User, Mail, Check, Shield } from "lucide-react";
+import { User, Check } from "lucide-react";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 
 export function ProfileTab() {

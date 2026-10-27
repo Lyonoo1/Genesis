@@ -1,0 +1,15 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+genesis.db
+genesis.db-journal
+genesis.db-wal
+genesis.db-shm
+.git
+.gitignore
+.env
+.env.local
+tests

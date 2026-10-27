@@ -114,7 +114,13 @@ export function EditProjectModal({
       return;
     }
     try {
-      const handle: FileSystemDirectoryHandle = await (window as any).showDirectoryPicker({
+      const handle: FileSystemDirectoryHandle = await (
+        window as Window & {
+          showDirectoryPicker: (opts?: {
+            mode?: string;
+          }) => Promise<FileSystemDirectoryHandle>;
+        }
+      ).showDirectoryPicker({
         mode: "readwrite",
       });
       if (handle) {
@@ -124,7 +130,7 @@ export function EditProjectModal({
           setName(handle.name);
         }
       }
-    } catch (e: any) {
+    } catch {
       // ignore abort
     }
   };
@@ -139,7 +145,11 @@ export function EditProjectModal({
       if (isCreate) {
         const newProj = addProject(trimmed, description.trim() || undefined, icon);
         if (selectedFolderHandle && newProj?.id) {
-          await saveDirectoryHandle(newProj.id, selectedFolderHandle);
+          try {
+            await saveDirectoryHandle(newProj.id, selectedFolderHandle);
+          } catch (handleErr) {
+            console.warn("保存本地目录句柄失败:", handleErr);
+          }
         }
       } else if (project) {
         await updateProject(project.id, {
@@ -149,7 +159,11 @@ export function EditProjectModal({
           is_archived: isArchived,
         });
         if (selectedFolderHandle) {
-          await saveDirectoryHandle(project.id, selectedFolderHandle);
+          try {
+            await saveDirectoryHandle(project.id, selectedFolderHandle);
+          } catch (handleErr) {
+            console.warn("保存本地目录句柄失败:", handleErr);
+          }
         }
       }
       onClose();

@@ -7,6 +7,8 @@ import { ChatInputBar } from "./ChatInputBar";
 import { ScrollToBottomBadge } from "./ScrollToBottomBadge";
 import { EmptyStateView } from "./EmptyStateView";
 import { ConversationTimelineRail } from "./ConversationTimelineRail";
+import { PermissionApprovalBanner } from "./PermissionApprovalBanner";
+import { TodoProgressBar } from "./TodoProgressBar";
 import { useStickyScroll } from "@/hooks/useStickyScroll";
 import { useChatStore } from "@/stores/useChatStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -130,11 +132,11 @@ export function MessageContainer({ sessionId }: MessageContainerProps) {
   };
 
   return (
-    <div className="relative w-full h-full flex flex-col overflow-hidden select-text">
+    <div data-chat-area="true" className="relative w-full h-full flex flex-col overflow-hidden select-text">
       {/* 1. 主纵向滚动区域：恒久挂载，采用 scrollbar-gutter: stable 杜绝滚动条出现引起的版心左右跳动 */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6 pt-4 pb-4 scrollbar-thin select-text [scrollbar-gutter:stable]"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-4 md:px-6 pt-4 pb-4 scrollbar-hover select-text [scrollbar-gutter:stable]"
       >
         {isEmpty ? (
           <div className="flex-1 min-h-full flex flex-col justify-center items-center pb-32">
@@ -142,6 +144,7 @@ export function MessageContainer({ sessionId }: MessageContainerProps) {
           </div>
         ) : (
           <div className="max-w-3xl mx-auto w-full min-h-full flex flex-col justify-start">
+            <TodoProgressBar sessionId={activeId || ""} />
             <MessageList sessionId={activeId || ""} bottomSpacerHeight={inputBarHeight + 24} />
           </div>
         )}
@@ -165,6 +168,14 @@ export function MessageContainer({ sessionId }: MessageContainerProps) {
           containerRef={containerRef}
         />
       )}
+
+      {/* 3.5 高危操作安全审批悬浮卡片 (浮于输入框上方，严禁被输入框遮挡) */}
+      <div
+        className="absolute left-0 right-0 z-40 pointer-events-auto px-4 md:px-6 transition-all duration-200"
+        style={{ bottom: `${inputBarHeight + 8}px` }}
+      >
+        <PermissionApprovalBanner sessionId={activeId} />
+      </div>
 
       {/* 4. 居底悬浮命令输入中枢 (动态上报渲染高度，水平宽度与代码块完全重合) */}
       <ChatInputBar

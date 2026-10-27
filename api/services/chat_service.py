@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+import re
 import time
 from typing import Any, AsyncGenerator, Optional
 from uuid import UUID
@@ -13,13 +15,23 @@ from repositories.message_repository import MessageRepository
 from repositories.session_repository import SessionRepository
 from repositories.mcp_repository import McpRepository
 from repositories.skill_repository import SkillRepository
+from repositories.project_repository import ProjectRepository
 from services.context_manager import ContextManager, context_manager
 from services.llm_adapter import LLMAdapter, llm_adapter, StreamChunk
 from services.mcp_client import McpClientManager, mcp_client_manager
+from services.permission_manager import PermissionDecision, permission_manager
 from services.skill_engine import SkillEngine, skill_engine
+from services.terminal_manager import get_default_workspace
 from services.tool_adapter import ToolAdapter
+from services.workspace_tool_executor import WorkspaceToolExecutor
 
 logger = logging.getLogger("genesis.chat_service")
+
+# Codex 范式：纯日常问候门控正则
+GREETING_PATTERN = re.compile(
+    r"^(你好[啊呀嘛呢]?|您好|hi|hello|hey|在吗|在么|早|早安|晚安|哈喽|早上好|下午好|晚上好)[\s!！。.~?？]*$",
+    re.IGNORECASE,
+)
 
 # 全局正在运行的生成任务注册表: "{user_id}:{session_id}" -> asyncio.Task
 RUNNING_TASKS: dict[str, asyncio.Task] = {}
@@ -54,6 +66,7 @@ class ChatService:
         session_repo: Optional[SessionRepository] = None,
         skill_repo: Optional[SkillRepository] = None,
         mcp_repo: Optional[McpRepository] = None,
+        project_repo: Optional[ProjectRepository] = None,
         engine: Optional[SkillEngine] = None,
         mcp_manager: Optional[McpClientManager] = None,
         llm: Optional[LLMAdapter] = None,
@@ -63,10 +76,12 @@ class ChatService:
         self.session_repo = session_repo or SessionRepository()
         self.skill_repo = skill_repo or SkillRepository()
         self.mcp_repo = mcp_repo or McpRepository()
+        self.project_repo = project_repo or ProjectRepository()
         self.skill_engine = engine or skill_engine
         self.mcp_client_manager = mcp_manager or mcp_client_manager
         self.llm_adapter = llm or llm_adapter
         self.context_manager = ctx_mgr or context_manager
+        self._steering_queues: dict[str, asyncio.Queue[str]] = {}
 
     @staticmethod
     def _task_key(user_id: str, session_id: Any) -> str:
@@ -80,6 +95,23 @@ class ChatService:
         key = self._task_key(user_id, session_id)
         RUNNING_TASKS.pop(key, None)
 
+    def is_task_running(self, user_id: str, session_id: Any) -> bool:
+        """检查指定会话当前是否处于活动运行中状态"""
+        key = self._task_key(user_id, session_id)
+        task = RUNNING_TASKS.get(key)
+        return bool(task and not task.done())
+
+    def add_steering_message(self, user_id: str, session_id: Any, text: str) -> bool:
+        """向正在运行中的会话投递实时插话指令 (Mid-task Steering)"""
+        key = self._task_key(user_id, session_id)
+        q = self._steering_queues.get(key)
+        if q is not None and self.is_task_running(user_id, session_id):
+            q.put_nowait(text)
+            logger.info("会话 [%s] 成功加入实时插话指令: %s", session_id, text[:60])
+            return True
+        logger.warning("会话 [%s] 当前无正在运行的任务或插话队列不可用", session_id)
+        return False
+
     def stop_task(self, user_id: str, session_id: Any) -> bool:
         """秒级 cancel 当前会话运行中的 Task"""
         key = self._task_key(user_id, session_id)
@@ -91,10 +123,69 @@ class ChatService:
             return True
         return False
 
+    async def resolve_workspace_root(
+        self,
+        user_id: str,
+        session_id: Any,
+        explicit_path: Optional[str] = None,
+    ) -> str:
+        """多级解析当前会话对应的真实物理工作区绝对路径"""
+        # 0. 优先检测当前用户是否已建立本地 Bridge 反向隧道
+        from services.bridge_manager import BridgeManager
+        bridge = BridgeManager.get_instance()
+        if bridge.is_connected(str(user_id)):
+            meta = bridge.get_metadata(str(user_id)) or {}
+            cwd = meta.get("cwd") or "."
+            return f"bridge://{user_id}::{cwd}"
+
+        if explicit_path and os.path.isdir(explicit_path):
+            return os.path.abspath(explicit_path)
+
+        # 尝试通过 session -> project 反查项目名称
+        project_name: Optional[str] = None
+        try:
+            sess = await self.session_repo.get_by_id(user_id, session_id)
+            if sess and sess.get("project_id"):
+                proj = await self.project_repo.get_by_id(user_id, sess["project_id"])
+                if proj:
+                    project_name = proj.get("name")
+        except Exception as e:
+            logger.warning("查询 Session/Project 关联异常: %s", e)
+
+        # 环境变量优先
+        env_root = os.environ.get("WORKSPACE_ROOT")
+        if env_root and os.path.isdir(env_root):
+            return os.path.abspath(env_root)
+
+        current_file = os.path.abspath(__file__)
+        genesis_root = os.path.abspath(os.path.join(current_file, "..", "..", ".."))
+        parent_dir = os.path.abspath(os.path.join(genesis_root, ".."))
+
+        if project_name:
+            if os.path.basename(parent_dir).lower() == project_name.lower():
+                return parent_dir
+            if os.path.basename(genesis_root).lower() == project_name.lower():
+                return genesis_root
+            candidate = os.path.join(parent_dir, project_name)
+            if os.path.isdir(candidate):
+                return candidate
+
+        # 默认回退至父目录（例如外层 agentProject 目录）或 genesis_root
+        if os.path.isdir(parent_dir) and os.path.basename(parent_dir) not in ["Desktop", "Users", "home", "root"]:
+            return parent_dir
+
+        return genesis_root
+
     async def collect_tools(self, user_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """收集当前用户所有可用的 Standard Tools，并建立反向查询元数据索引"""
         tools_list: list[dict[str, Any]] = []
         tools_lookup: dict[str, Any] = {}
+
+        # 0. 注入系统内置工作区文件与命令操作工具
+        for bt in ToolAdapter.BUILTIN_WORKSPACE_TOOLS:
+            tools_list.append(bt)
+            fn_name = bt["function"]["name"]
+            tools_lookup[fn_name] = {"type": "workspace", "data": bt}
 
         # 1. 收集自动触发的 Skills
         try:
@@ -235,12 +326,16 @@ class ChatService:
         session_id: Any,
         req: ChatRequest,
         user_id: str,
-        max_steps: int = 5,
+        max_steps: int = 20,
     ) -> AsyncGenerator[str, None]:
         """核心 ReAct 流式生成器：协调持久化、模型推理与多步工具执行"""
         current_task = asyncio.current_task()
         if current_task:
             self.register_task(user_id, session_id, current_task)
+
+        task_key = self._task_key(user_id, session_id)
+        steering_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._steering_queues[task_key] = steering_queue
 
         # 1. 持久化当前用户消息
         user_msg = await self.message_repo.create(
@@ -294,6 +389,11 @@ class ChatService:
 
         try:
             # 2. 构建初始上下文与动态工具装配
+            workspace_root = await self.resolve_workspace_root(
+                user_id=user_id,
+                session_id=session_id,
+                explicit_path=req.workspace_path,
+            )
             available_tools, tools_lookup = await self.collect_tools(user_id)
             messages = await self.context_manager.build_context(
                 user_id=user_id,
@@ -303,7 +403,31 @@ class ChatService:
                 model=req.model,
                 has_tools=bool(available_tools),
                 context_window=req.context_window or 1048576,
+                workspace_root=workspace_root,
+                api_key=req.api_key,
+                base_url=req.base_url,
+                provider=req.provider,
             )
+
+            # Codex 范式：纯日常问候门控检测
+            # 严格禁止在问候时动态删除 tools 列表，确保 System Prompt + Tools 静态前缀稳定以最大化 Prompt Cache 命中率
+            is_greeting = bool(GREETING_PATTERN.match(req.content.strip()))
+            if is_greeting and messages and messages[-1].get("role") == "user":
+                last_user_content = messages[-1].get("content") or ""
+                hint = "\n[系统提示: 该消息为常规问候，请直接回复，无需调用任何工具]"
+                if isinstance(last_user_content, str):
+                    if hint not in last_user_content:
+                        messages[-1]["content"] = last_user_content + hint
+                elif isinstance(last_user_content, list):
+                    found_text = False
+                    for b in reversed(last_user_content):
+                        if isinstance(b, dict) and b.get("type") == "text":
+                            if hint not in b.get("text", ""):
+                                b["text"] = b.get("text", "") + hint
+                            found_text = True
+                            break
+                    if not found_text:
+                        last_user_content.append({"type": "text", "text": hint.strip()})
 
             step = 1
 
@@ -315,10 +439,13 @@ class ChatService:
                 step_reasoning = ""
                 step_tool_calls: list[dict[str, Any]] = []
 
+                # 保持 tools 静态前缀永不动态清除
+                effective_tools = available_tools if available_tools else None
+
                 # 调用底层流式适配器 (支持用户自定义 API Key 与 Base URL)
                 stream = self.llm_adapter.stream_chat(
                     messages=messages,
-                    tools=available_tools if available_tools else None,
+                    tools=effective_tools,
                     model=req.model,
                     temperature=req.temperature or 0.7,
                     max_tokens=req.max_tokens,
@@ -483,6 +610,45 @@ class ChatService:
                             pass
                         title_task = None
 
+                    # 检查运行中实时插话队列 (Mid-task Steering)
+                    steered_texts: list[str] = []
+                    while not steering_queue.empty():
+                        try:
+                            st = steering_queue.get_nowait()
+                            if st and str(st).strip():
+                                steered_texts.append(str(st).strip())
+                        except asyncio.QueueEmpty:
+                            break
+
+                    if steered_texts:
+                        combined_steer = "\n\n".join(steered_texts)
+                        logger.info("会话 [%s] 在 Step %d (文本回复结束) 检测到实时插话: %s", session_id, step, combined_steer)
+                        steer_msg = await self.message_repo.create(
+                            user_id=user_id,
+                            msg_in=MessageCreate(
+                                session_id=session_id,
+                                parent_id=last_message_id,
+                                role=MessageRole.USER,
+                                content=combined_steer,
+                                status=MessageStatus.SUCCESS,
+                            ),
+                        )
+                        last_message_id = steer_msg["id"]
+                        asst_text = final_content or step_reasoning or "已完成当前步骤。"
+                        messages.append({"role": "assistant", "content": asst_text})
+                        messages.append({"role": "user", "content": combined_steer})
+                        yield format_sse(
+                            SSEEventName.MID_TASK_STEERED.value,
+                            {
+                                "session_id": str(session_id),
+                                "content": combined_steer,
+                                "step": step,
+                            },
+                        )
+                        step += 1
+                        if step <= max_steps:
+                            continue
+
                     break
 
                 # 情况 B：模型触发了工具调用，执行多态工具派发
@@ -524,7 +690,18 @@ class ChatService:
                 )
 
                 # 3. 执行工具并广播结果
+                # ── 并发优化：分拣 subagent 调用与普通工具调用 ──
+                normal_tool_calls = []
+                subagent_tool_calls = []
                 for tc in step_tool_calls:
+                    _kind, _target, _method = ToolAdapter.parse_namespaced_tool(tc["name"])
+                    if _kind == "workspace" and _method == "dispatch_subagent":
+                        subagent_tool_calls.append(tc)
+                    else:
+                        normal_tool_calls.append(tc)
+
+                # ── 3a. 串行执行普通工具（保持原有逻辑不变）──
+                for tc in normal_tool_calls:
                     tc_id = tc["id"]
                     tc_name = tc["name"]
                     tc_args = tc["arguments"]
@@ -537,7 +714,9 @@ class ChatService:
                         if not tool_meta:
                             # 尝试兜底反向命名空间解析
                             kind, target, method = ToolAdapter.parse_namespaced_tool(tc_name)
-                            if kind == "skill":
+                            if kind == "workspace":
+                                tool_meta = {"type": "workspace", "method": method}
+                            elif kind == "skill":
                                 skill_obj = None
                                 try:
                                     skill_obj = await self.skill_repo.get_by_name(user_id, target)
@@ -565,30 +744,209 @@ class ChatService:
                                     message=f"未找到工具 [{tc_name}] 的执行器配置",
                                 )
 
-                        if tool_meta.get("type") == "skill":
-                            skill_data = tool_meta["data"]
-                            res_payload = await self.skill_engine.execute_skill(
-                                skill=skill_data,
-                                arguments=tc_args,
-                                timeout=30,
+                        if res_payload is None and not is_error:
+                            # 0. Claude Code (s03) 权限管线与人机协同审批
+                            perm_decision, perm_reason = permission_manager.evaluate(
+                                tc_name, tc_args, workspace_root=workspace_root
                             )
-                        elif tool_meta.get("type") == "mcp":
-                            server_data = tool_meta["server"]
-                            raw_name = tool_meta["raw_name"]
-                            res_payload = await self.mcp_client_manager.call_tool(
-                                config=server_data,
-                                tool_name=raw_name,
-                                arguments=tc_args,
-                            )
-                        else:
-                            raise AppException(
-                                code=ErrorCode.NOT_FOUND,
-                                message=f"未支持的工具类型: {tc_name}",
-                            )
+                            if perm_decision == PermissionDecision.DENY:
+                                is_error = True
+                                res_payload = {"error": perm_reason}
+                            elif perm_decision == PermissionDecision.ASK:
+                                yield format_sse(
+                                    "permission_request",
+                                    {
+                                        "session_id": str(session_id),
+                                        "tool_call_id": tc_id,
+                                        "name": tc_name,
+                                        "args": tc_args,
+                                        "reason": perm_reason,
+                                        "step": step,
+                                    },
+                                )
+                                approval_fut = permission_manager.register_approval(
+                                    str(session_id), tc_id
+                                )
+                                try:
+                                    user_approved = await asyncio.wait_for(
+                                        approval_fut, timeout=60.0
+                                    )
+                                except asyncio.TimeoutError:
+                                    user_approved = False
+                                    logger.info("会话 [%s] 工具 [%s] 审批超时，自动判定拒绝", session_id, tc_id)
+
+                                if not user_approved:
+                                    is_error = True
+                                    res_payload = {"error": f"操作已被用户（或超时）拒绝执行: {perm_reason}"}
+
+                        if res_payload is None and not is_error:
+                            if tool_meta.get("type") == "workspace":
+                                kind, target, method = ToolAdapter.parse_namespaced_tool(tc_name)
+                                # 优先判断是否走本地 Bridge 隧道
+                                if workspace_root.startswith("bridge://"):
+                                    from services.bridge_manager import BridgeManager
+                                    bridge = BridgeManager.get_instance()
+                                    uid = str(user_id)
+                                    if method == "delete_file":
+                                        res_payload = await bridge.call_rpc(uid, "fs.deleteFile", {"path": tc_args.get("path", "")})
+                                    elif method == "write_file":
+                                        res_payload = await bridge.call_rpc(uid, "fs.writeFile", {"path": tc_args.get("path", ""), "content": tc_args.get("content", "")})
+                                    elif method == "edit_file":
+                                        res_payload = await bridge.call_rpc(uid, "fs.editFile", {"path": tc_args.get("path", ""), "old_string": tc_args.get("old_string", ""), "new_string": tc_args.get("new_string", "")})
+                                    elif method == "read_file":
+                                        res_payload = await bridge.call_rpc(uid, "fs.readFile", {"path": tc_args.get("path", "")})
+                                    elif method == "list_dir":
+                                        res_payload = await bridge.call_rpc(uid, "fs.listDir", {"path": tc_args.get("path", "."), "recursive": tc_args.get("recursive", False)})
+                                    elif method == "execute_command":
+                                        res_payload = await bridge.call_rpc(uid, "shell.execute", {"command": tc_args.get("command", ""), "timeout": tc_args.get("timeout", 60)})
+                                    elif method == "grep_search":
+                                        res_payload = await bridge.call_rpc(uid, "fs.grepSearch", {"query": tc_args.get("query", ""), "path": tc_args.get("path", ".")})
+                                    elif method == "find_by_name":
+                                        res_payload = await bridge.call_rpc(uid, "fs.findByName", {"pattern": tc_args.get("pattern", "*"), "path": tc_args.get("path", ".")})
+                                    elif method == "stop_process":
+                                        res_payload = {"success": True, "message": "已向本地 Bridge 节点发送停止信号"}
+                                    else:
+                                        res_payload = {"success": False, "error": f"Bridge 模式暂不支持工具: {method}"}
+                                elif method == "delete_file":
+                                    res_payload = WorkspaceToolExecutor.delete_file(
+                                        workspace_root=workspace_root,
+                                        path=tc_args.get("path", ""),
+                                    )
+                                elif method == "write_file":
+                                    res_payload = WorkspaceToolExecutor.write_file(
+                                        workspace_root=workspace_root,
+                                        path=tc_args.get("path", ""),
+                                        content=tc_args.get("content", ""),
+                                        overwrite=tc_args.get("overwrite", True),
+                                    )
+                                elif method == "edit_file":
+                                    res_payload = WorkspaceToolExecutor.edit_file(
+                                        workspace_root=workspace_root,
+                                        path=tc_args.get("path", ""),
+                                        old_string=tc_args.get("old_string", ""),
+                                        new_string=tc_args.get("new_string", ""),
+                                    )
+                                elif method == "read_file":
+                                    res_payload = WorkspaceToolExecutor.read_file(
+                                        workspace_root=workspace_root,
+                                        path=tc_args.get("path", ""),
+                                    )
+                                elif method == "list_dir":
+                                    res_payload = WorkspaceToolExecutor.list_dir(
+                                        workspace_root=workspace_root,
+                                        path=tc_args.get("path", "."),
+                                        recursive=tc_args.get("recursive", False),
+                                    )
+                                elif method == "execute_command":
+                                    res_payload = await WorkspaceToolExecutor.execute_command(
+                                        workspace_root=workspace_root,
+                                        command=tc_args.get("command", ""),
+                                        timeout=tc_args.get("timeout", 30),
+                                        is_background=tc_args.get("is_background"),
+                                        session_id=str(session_id),
+                                    )
+                                elif method == "grep_search":
+                                    res_payload = WorkspaceToolExecutor.grep_search(
+                                        workspace_root=workspace_root,
+                                        query=tc_args.get("query", ""),
+                                        path=tc_args.get("path", "."),
+                                        case_sensitive=tc_args.get("case_sensitive", False),
+                                        is_regex=tc_args.get("is_regex", False),
+                                    )
+                                elif method == "find_by_name":
+                                    res_payload = WorkspaceToolExecutor.find_by_name(
+                                        workspace_root=workspace_root,
+                                        pattern=tc_args.get("pattern", "*"),
+                                        path=tc_args.get("path", "."),
+                                        type=tc_args.get("type", "any"),
+                                    )
+                                elif method == "stop_process":
+                                    pid_val = int(tc_args.get("pid", 0))
+                                    ok = WorkspaceToolExecutor.stop_background_process(pid_val)
+                                    res_payload = {
+                                        "success": ok,
+                                        "pid": pid_val,
+                                        "message": f"后台进程 (PID: {pid_val}) 已成功停止并清理完毕",
+                                    }
+                                elif method == "todo_write":
+                                    from services.todo_manager import todo_manager
+                                    if isinstance(tc_args, list):
+                                        raw_todos = tc_args
+                                    elif isinstance(tc_args, dict):
+                                        raw_todos = (
+                                            tc_args.get("todos")
+                                            or tc_args.get("tasks")
+                                            or tc_args.get("items")
+                                            or tc_args.get("todo_list")
+                                            or []
+                                        )
+                                    else:
+                                        raw_todos = []
+                                    if isinstance(raw_todos, str):
+                                        try:
+                                            raw_todos = json.loads(raw_todos)
+                                        except Exception:
+                                            raw_todos = []
+                                    if not isinstance(raw_todos, list):
+                                        raw_todos = []
+                                    todo_manager.set_todos(str(session_id), raw_todos)
+                                    # 读取校验与补齐 ID 后的标准 todos 结构
+                                    validated_todos = todo_manager.get_todos(str(session_id))
+                                    # 立即向前端 SSE 流推送 workbench_todos 事件以实时更新 UI 任务栏
+                                    yield format_sse(
+                                        SSEEventName.WORKBENCH_TODOS.value,
+                                        {
+                                            "session_id": str(session_id),
+                                            "todos": validated_todos,
+                                            "step": step,
+                                        },
+                                    )
+                                    snap_str = todo_manager.format_todo_snapshot(str(session_id))
+                                    res_payload = {
+                                        "success": True,
+                                        "todos": validated_todos,
+                                        "count": len(validated_todos),
+                                        "snapshot": snap_str,
+                                        "message": f"待办任务状态机已更新（共 {len(validated_todos)} 项）",
+                                    }
+                                else:
+                                    raise AppException(
+                                        code=ErrorCode.NOT_FOUND,
+                                        message=f"未找到工作区操作方法: {method}",
+                                    )
+                            elif tool_meta.get("type") == "skill":
+                                skill_data = tool_meta["data"]
+                                res_payload = await self.skill_engine.execute_skill(
+                                    skill=skill_data,
+                                    arguments=tc_args,
+                                    timeout=30,
+                                )
+                            elif tool_meta.get("type") == "mcp":
+                                server_data = tool_meta["server"]
+                                raw_name = tool_meta["raw_name"]
+                                res_payload = await self.mcp_client_manager.call_tool(
+                                    config=server_data,
+                                    tool_name=raw_name,
+                                    arguments=tc_args,
+                                    )
+                            else:
+                                raise AppException(
+                                    code=ErrorCode.NOT_FOUND,
+                                    message=f"未支持的工具类型: {tc_name}",
+                                )
                     except Exception as exc:
                         is_error = True
                         res_payload = {"error": str(exc)}
                         logger.error("执行工具 [%s] 失败: %s", tc_name, exc)
+
+                    if isinstance(res_payload, dict) and res_payload.get("success") is False:
+                        is_error = True
+
+                    # Claude Code (s08) 输出自动压缩与磁盘转储
+                    if not is_error and res_payload:
+                        res_payload = WorkspaceToolExecutor.compact_output(
+                            workspace_root, res_payload
+                        )
 
                     # 广播工具执行结果事件
                     yield format_sse(
@@ -597,13 +955,85 @@ class ChatService:
                             "tool_call_id": tc_id,
                             "name": tc_name,
                             "result": res_payload,
+                            "diff": res_payload.get("diff") if isinstance(res_payload, dict) else None,
+                            "additions": res_payload.get("additions") if isinstance(res_payload, dict) else None,
+                            "deletions": res_payload.get("deletions") if isinstance(res_payload, dict) else None,
                             "is_error": is_error,
                             "step": step,
                         },
                     )
 
-                    # 持久化 tool 角色消息入库
+                    # 广播工作台联动专属事件 (workbench_preview / workbench_file_change)
+                    if not is_error and isinstance(res_payload, dict):
+                        is_workspace_tool = (
+                            tool_meta.get("type") == "workspace"
+                            or tc_name.startswith("workspace__")
+                        )
+                        ws_method = None
+                        if is_workspace_tool:
+                            _, _, ws_method = ToolAdapter.parse_namespaced_tool(tc_name)
+
+                        # 1. 文件变更事件：write_file 或 edit_file 成功落盘
+                        if ws_method in ("write_file", "edit_file") and res_payload.get("success"):
+                            yield format_sse(
+                                SSEEventName.WORKBENCH_FILE_CHANGE.value,
+                                {
+                                    "path": res_payload.get("path") or tc_args.get("path", ""),
+                                    "name": res_payload.get("name") or os.path.basename(res_payload.get("path", "")),
+                                    "unified_diff": res_payload.get("diff", ""),
+                                    "diff": res_payload.get("diff", ""),
+                                    "additions": res_payload.get("additions", 0),
+                                    "deletions": res_payload.get("deletions", 0),
+                                    "original_content": res_payload.get("original_content", ""),
+                                    "modified_content": res_payload.get("modified_content", ""),
+                                },
+                            )
+
+                        # 2. 预览地址就绪事件：execute_command 探测到 Web 端口或服务地址
+                        if ws_method == "execute_command":
+                            detected_url = res_payload.get("url")
+                            detected_port = None
+
+                            if not detected_url:
+                                combined_out = res_payload.get("stdout") or ""
+                                if not combined_out and res_payload.get("recent_logs"):
+                                    combined_out = "\n".join(res_payload.get("recent_logs") or [])
+                                if combined_out:
+                                    m = WorkspaceToolExecutor.PORT_REGEX.search(combined_out)
+                                    if m:
+                                        if m.groupdict().get("p4"):
+                                            detected_url = m.group("p4")
+                                        else:
+                                            p_str = (
+                                                m.groupdict().get("p1")
+                                                or m.groupdict().get("p2")
+                                                or m.groupdict().get("p3")
+                                            )
+                                            if p_str:
+                                                detected_port = int(p_str)
+                                                detected_url = f"http://localhost:{detected_port}"
+
+                            if detected_url:
+                                detected_url = detected_url.replace("://0.0.0.0", "://localhost")
+                                if not detected_port:
+                                    try:
+                                        from urllib.parse import urlparse
+                                        p = urlparse(detected_url)
+                                        detected_port = p.port
+                                    except Exception:
+                                        pass
+
+                                yield format_sse(
+                                    SSEEventName.WORKBENCH_PREVIEW.value,
+                                    {
+                                        "url": detected_url,
+                                        "port": detected_port,
+                                    },
+                                )
+
+                    # 持久化 tool 角色消息入库 (经由 L1 守门员保护性截断)
                     tool_content_str = json.dumps(res_payload, ensure_ascii=False)
+                    tool_content_str = self.context_manager.gate_tool_output(tool_content_str)
                     tool_msg_record = await self.message_repo.create(
                         user_id=user_id,
                         msg_in=MessageCreate(
@@ -618,18 +1048,198 @@ class ChatService:
                     last_message_id = tool_msg_record["id"]
 
                     # 写回 messages 供下一步模型上下文使用
-                    messages.append(
-                        {
+                    tool_mem_item: dict[str, Any] = {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": tool_content_str,
+                    }
+                    if is_error:
+                        tool_mem_item["is_error"] = True
+                    messages.append(tool_mem_item)
+
+                # ── 3b. 并发执行所有 dispatch_subagent 调用 ──
+                if subagent_tool_calls:
+                    from services.subagent_runner import subagent_runner
+
+                    subagent_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+                    subagent_results: dict[str, dict[str, Any]] = {}
+
+                    async def _run_single_subagent(
+                        sa_tc: dict[str, Any],
+                        agent_id: str,
+                        q: asyncio.Queue,
+                    ) -> None:
+                        """在独立 task 中运行单个子代理，将进度事件推入共享队列"""
+                        sa_args = sa_tc["arguments"]
+                        sa_agent_type = str(sa_args.get("agent_type", "explore"))
+                        sa_task_prompt = str(sa_args.get("task_prompt", ""))
+                        sa_result: dict[str, Any] | None = None
+                        try:
+                            async for sub_chunk in subagent_runner.run(
+                                workspace_root=workspace_root,
+                                agent_type=sa_agent_type,
+                                task_prompt=sa_task_prompt,
+                                model=req.model,
+                                api_key=req.api_key,
+                                base_url=req.base_url,
+                                provider=req.provider,
+                                max_steps=8,
+                            ):
+                                if sub_chunk["type"] == "progress":
+                                    event_data = {**sub_chunk["data"], "agent_id": agent_id}
+                                    await q.put({"type": "progress", "data": event_data})
+                                elif sub_chunk["type"] == "result":
+                                    sa_result = sub_chunk["data"]
+                        except asyncio.CancelledError:
+                            logger.info("并发子代理 [%s] 任务被取消中断", agent_id)
+                            raise
+                        except Exception as e:
+                            logger.error("并发子代理 [%s] 执行异常: %s", agent_id, e)
+                            sa_result = {"success": False, "error": str(e)}
+
+                        if sa_result is None:
+                            sa_result = {"success": False, "error": "子代理未产出有效结果"}
+
+                        # 发送完成事件
+                        await q.put({
+                            "type": "progress",
+                            "data": {
+                                "event": "subagent_progress",
+                                "agent_id": agent_id,
+                                "agent_type": sa_agent_type,
+                                "task_prompt": sa_task_prompt,
+                                "status": "completed" if sa_result.get("success") else "failed",
+                                "summary_preview": sa_result.get("summary", ""),
+                                "steps_taken": sa_result.get("steps_taken", 0),
+                            },
+                        })
+                        # 标记 task 完成
+                        await q.put({"type": "done", "agent_id": agent_id, "result": sa_result})
+
+                    # 为每个子代理创建并发 task
+                    running_tasks: list[asyncio.Task] = []
+                    agent_id_map: dict[str, dict[str, Any]] = {}  # agent_id -> tc
+                    for sa_tc in subagent_tool_calls:
+                        agent_id = f"agent-{sa_tc['id']}"
+                        agent_id_map[agent_id] = sa_tc
+                        task = asyncio.create_task(
+                            _run_single_subagent(sa_tc, agent_id, subagent_event_queue)
+                        )
+                        running_tasks.append(task)
+
+                    # 从队列中消费事件并 yield，直到所有子代理完成
+                    try:
+                        completed_count = 0
+                        while completed_count < len(running_tasks):
+                            event = await subagent_event_queue.get()
+                            if event["type"] == "done":
+                                completed_count += 1
+                                agent_id = event["agent_id"]
+                                sa_result = event["result"]
+                                subagent_results[agent_id] = sa_result
+                            elif event["type"] == "progress":
+                                yield format_sse("subagent_progress", event["data"])
+                    except (asyncio.CancelledError, GeneratorExit):
+                        logger.info("主生成协程被取消，正在中止所有正在运行的并发子代理...")
+                        for t in running_tasks:
+                            if not t.done():
+                                t.cancel()
+                        raise
+                    finally:
+                        # 确保所有 task 彻底退出清理
+                        for t in running_tasks:
+                            if not t.done():
+                                t.cancel()
+                        await asyncio.gather(*running_tasks, return_exceptions=True)
+
+                    # 为每个子代理写入 tool_result 到 messages 和数据库
+                    for agent_id, sa_tc in agent_id_map.items():
+                        sa_tc_id = sa_tc["id"]
+                        sa_tc_name = sa_tc["name"]
+                        sa_result = subagent_results.get(agent_id, {"success": False, "error": "未知错误"})
+                        sa_is_error = not sa_result.get("success", False)
+
+                        if not sa_is_error and sa_result:
+                            sa_result = WorkspaceToolExecutor.compact_output(
+                                workspace_root, sa_result, max_chars=32000
+                            )
+
+                        yield format_sse(
+                            SSEEventName.TOOL_CALL_RESULT.value,
+                            {
+                                "tool_call_id": sa_tc_id,
+                                "agent_id": agent_id,
+                                "name": sa_tc_name,
+                                "result": sa_result,
+                                "is_error": sa_is_error,
+                                "step": step,
+                            },
+                        )
+
+                        sa_content_str = json.dumps(sa_result, ensure_ascii=False)
+                        sa_content_str = self.context_manager.gate_tool_output(sa_content_str)
+                        sa_tool_msg = await self.message_repo.create(
+                            user_id=user_id,
+                            msg_in=MessageCreate(
+                                session_id=session_id,
+                                parent_id=last_message_id,
+                                role=MessageRole.TOOL,
+                                content=sa_content_str,
+                                tool_call_id=sa_tc_id,
+                                status=MessageStatus.SUCCESS if not sa_is_error else MessageStatus.FAILED,
+                            ),
+                        )
+                        last_message_id = sa_tool_msg["id"]
+
+                        sa_mem_item: dict[str, Any] = {
                             "role": "tool",
-                            "tool_call_id": tc_id,
-                            "content": tool_content_str,
+                            "tool_call_id": sa_tc_id,
+                            "content": sa_content_str,
                         }
-                    )
+                        if sa_is_error:
+                            sa_mem_item["is_error"] = True
+                        messages.append(sa_mem_item)
 
                 yield format_sse(
                     SSEEventName.STEP_FINISH.value,
                     {"step": step, "finish_reason": "tool_calls"},
                 )
+
+                # 4. 检查运行中实时插话队列 (Mid-task Steering)
+                steered_texts: list[str] = []
+                while not steering_queue.empty():
+                    try:
+                        st = steering_queue.get_nowait()
+                        if st and str(st).strip():
+                            steered_texts.append(str(st).strip())
+                    except asyncio.QueueEmpty:
+                        break
+
+                if steered_texts:
+                    combined_steer = "\n\n".join(steered_texts)
+                    logger.info("会话 [%s] 在 Step %d 检测到实时插话: %s", session_id, step, combined_steer)
+                    # 持久化为新的 user 消息节点
+                    steer_msg = await self.message_repo.create(
+                        user_id=user_id,
+                        msg_in=MessageCreate(
+                            session_id=session_id,
+                            parent_id=last_message_id,
+                            role=MessageRole.USER,
+                            content=combined_steer,
+                            status=MessageStatus.SUCCESS,
+                        ),
+                    )
+                    last_message_id = steer_msg["id"]
+                    # 追加到上下文末尾，让大模型在下一步自然转向
+                    messages.append({"role": "user", "content": combined_steer})
+                    yield format_sse(
+                        SSEEventName.MID_TASK_STEERED.value,
+                        {
+                            "session_id": str(session_id),
+                            "content": combined_steer,
+                            "step": step,
+                        },
+                    )
 
                 step += 1
                 if step > max_steps:
@@ -640,6 +1250,28 @@ class ChatService:
                         {"delta": warn_text, "step": step - 1},
                     )
                     break
+
+            # 若有未被执行的剩余插话指令，兜底持久化入库避免消息丢失
+            leftover_steers = []
+            while not steering_queue.empty():
+                try:
+                    st = steering_queue.get_nowait()
+                    if st and str(st).strip():
+                        leftover_steers.append(str(st).strip())
+                except asyncio.QueueEmpty:
+                    break
+            if leftover_steers:
+                combined_leftover = "\n\n".join(leftover_steers)
+                await self.message_repo.create(
+                    user_id=user_id,
+                    msg_in=MessageCreate(
+                        session_id=session_id,
+                        parent_id=last_message_id,
+                        role=MessageRole.USER,
+                        content=combined_leftover,
+                        status=MessageStatus.SUCCESS,
+                    ),
+                )
 
             # 最终收尾如果还有未推送的 title_task
             if title_task:
@@ -657,13 +1289,27 @@ class ChatService:
                     pass
                 title_task = None
 
-            # 4. 广播全流程完成事件
+            # 4. 广播全流程完成事件并持久化本轮 metrics
+            wall_clock_ms = int((time.time() - run_t0) * 1000)
+            metrics_dict = {
+                "latency_ms": wall_clock_ms,
+                "tokens": (total_input_tokens + total_output_tokens) if (total_input_tokens + total_output_tokens) > 0 else None,
+                "input_tokens": total_input_tokens if total_input_tokens > 0 else None,
+                "output_tokens": total_output_tokens if total_output_tokens > 0 else None,
+            }
+            if last_message_id:
+                try:
+                    await self.message_repo.update_metrics(last_message_id, metrics_dict)
+                except Exception as _e:
+                    logger.warning("更新消息 metrics 失败: %s", _e)
+
             yield format_sse(
                 SSEEventName.DONE.value,
                 {
                     "session_id": str(session_id),
                     "last_message_id": str(last_message_id),
                     "total_steps": step if step <= max_steps else max_steps,
+                    "duration_ms": wall_clock_ms,
                     "tokens": {
                         "input": total_input_tokens,
                         "output": total_output_tokens,
@@ -690,7 +1336,9 @@ class ChatService:
                 {"code": "INTERNAL_ERROR", "message": str(exc)},
             )
         finally:
+            self._steering_queues.pop(task_key, None)
             self.unregister_task(user_id, session_id)
+            permission_manager.cancel_session_approvals(str(session_id))
             if total_input_tokens > 0 or total_output_tokens > 0:
                 try:
                     from services.usage_service import usage_service

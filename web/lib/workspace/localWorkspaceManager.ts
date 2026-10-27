@@ -17,10 +17,16 @@ const IGNORE_PATTERNS = new Set([
   ".next",
   "dist",
   "build",
+  "out",
+  ".turbo",
+  ".cache",
   ".DS_Store",
   "__pycache__",
   ".venv",
   "venv",
+  "coverage",
+  ".genesis",
+  ".idea",
 ]);
 
 // 1. IndexedDB 存储与提取文件句柄
@@ -69,10 +75,24 @@ export async function removeDirectoryHandle(projectId: string): Promise<void> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).delete(projectId);
+    const store = tx.objectStore(STORE_NAME);
+    store.delete(projectId);
+    if (projectId !== "genesis-default-workspace") {
+      store.delete("genesis-default-workspace");
+    }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+interface PermissionCapableHandle {
+  queryPermission?: (descriptor?: { mode?: "read" | "readwrite" }) => Promise<PermissionState>;
+  requestPermission?: (descriptor?: { mode?: "read" | "readwrite" }) => Promise<PermissionState>;
+  entries?: () => AsyncIterable<[string, FileSystemHandle]>;
+}
+
+interface WritableCapableFileHandle {
+  createWritable?: () => Promise<FileSystemWritableFileStream>;
 }
 
 // 2. 权限校验与唤醒
@@ -81,15 +101,18 @@ export async function verifyPermission(
   requestWrite = true
 ): Promise<boolean> {
   try {
-    const options: any = {
+    const options = {
       mode: requestWrite ? "readwrite" : "read",
-    };
-    if (typeof (handle as any).queryPermission === "function") {
-      const status = await (handle as any).queryPermission(options);
+    } as const;
+    const permHandle = handle as unknown as PermissionCapableHandle;
+    if (typeof permHandle.queryPermission === "function") {
+      const status = await permHandle.queryPermission(options);
       if (status === "granted") return true;
     }
-    if (typeof (handle as any).requestPermission === "function") {
-      const status = await (handle as any).requestPermission(options);
+    // 关键防卡死：requestPermission 必须在直接的用户手势（如点击唤醒）中触发
+    // 若不是 requestWrite（即仅为后台静默探针模式），严禁调用 requestPermission，否则触发浏览器 SecurityError 导致状态冻结
+    if (requestWrite && typeof permHandle.requestPermission === "function") {
+      const status = await permHandle.requestPermission(options);
       return status === "granted";
     }
     return false;
@@ -105,39 +128,56 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// 3. 递归扫描本地目录树
+// 3. 递归扫描本地目录树 (带深度保护、文件上限与防卡死优化)
 export async function scanDirectory(
   handle: FileSystemDirectoryHandle,
-  currentPath = ""
+  currentPath = "",
+  depth = 0,
+  maxDepth = 4,
+  countRef = { current: 0 },
+  maxFiles = 600
 ): Promise<WorkspaceFileNode[]> {
+  if (depth > maxDepth || countRef.current >= maxFiles) {
+    return [];
+  }
+
   const nodes: WorkspaceFileNode[] = [];
+  const dirHandle = handle as unknown as PermissionCapableHandle;
 
-  for await (const [name, entry] of (handle as any).entries()) {
-    if (IGNORE_PATTERNS.has(name) || name.startsWith(".")) continue;
+  if (typeof dirHandle.entries === "function") {
+    try {
+      for await (const [name, entry] of dirHandle.entries()) {
+        if (IGNORE_PATTERNS.has(name)) continue;
+        if (countRef.current >= maxFiles) break;
 
-    const relPath = currentPath ? `${currentPath}/${name}` : name;
-    if (entry.kind === "directory") {
-      const children = await scanDirectory(entry as FileSystemDirectoryHandle, relPath);
-      nodes.push({
-        name,
-        path: relPath,
-        kind: "directory",
-        children,
-      });
-    } else {
-      let sizeStr: string | undefined;
-      try {
-        const file = await (entry as FileSystemFileHandle).getFile();
-        sizeStr = formatBytes(file.size);
-      } catch {
-        // ignore size calculation error
+        const relPath = currentPath ? `${currentPath}/${name}` : name;
+        if (entry.kind === "directory") {
+          const children = await scanDirectory(
+            entry as FileSystemDirectoryHandle,
+            relPath,
+            depth + 1,
+            maxDepth,
+            countRef,
+            maxFiles
+          );
+          nodes.push({
+            name,
+            path: relPath,
+            kind: "directory",
+            children,
+          });
+        } else {
+          countRef.current += 1;
+          // 文件轻量扫描，避免对每个文件同步阻塞调用 getFile() 导致主线程严重卡顿
+          nodes.push({
+            name,
+            path: relPath,
+            kind: "file",
+          });
+        }
       }
-      nodes.push({
-        name,
-        path: relPath,
-        kind: "file",
-        size: sizeStr,
-      });
+    } catch (err) {
+      console.warn(`扫描目录 ${currentPath || "根目录"} 异常:`, err);
     }
   }
 
@@ -148,13 +188,30 @@ export async function scanDirectory(
   });
 }
 
+// 格式化相对路径并防止 . 或 .. 导致 File System Access API 抛错
+export function normalizeRelativePath(filePath: string): string[] {
+  return filePath
+    .replace(/\\/g, "/")
+    .replace(/^(\.\/|\/)+/, "")
+    .split("/")
+    .map((s) => s.trim())
+    .filter((s) => Boolean(s) && s !== "." && s !== "..");
+}
+
 // 4. 读取本地文件内容
 export async function readLocalFile(
   handle: FileSystemDirectoryHandle,
   relativePath: string
 ): Promise<{ content: string; size: string; name: string }> {
-  const parts = relativePath.split("/").filter(Boolean);
-  let currentHandle: any = handle;
+  let parts = normalizeRelativePath(relativePath);
+  if (parts.length === 0) {
+    throw new Error("无效的文件路径");
+  }
+  // 若首段是当前根目录名称，去除避免自身查找导致 NotFoundError
+  if (parts.length > 1 && parts[0] === handle.name) {
+    parts = parts.slice(1);
+  }
+  let currentHandle: FileSystemDirectoryHandle = handle;
 
   for (let i = 0; i < parts.length - 1; i++) {
     currentHandle = await currentHandle.getDirectoryHandle(parts[i]);
@@ -177,8 +234,15 @@ export async function writeLocalFile(
   relativePath: string,
   content: string
 ): Promise<void> {
-  const parts = relativePath.split("/").filter(Boolean);
-  let currentHandle: any = handle;
+  let parts = normalizeRelativePath(relativePath);
+  if (parts.length === 0) {
+    throw new Error("无效的文件路径");
+  }
+  // 若首段是当前根目录名称，去除避免自身查找导致 NotFoundError
+  if (parts.length > 1 && parts[0] === handle.name) {
+    parts = parts.slice(1);
+  }
+  let currentHandle: FileSystemDirectoryHandle = handle;
 
   for (let i = 0; i < parts.length - 1; i++) {
     currentHandle = await currentHandle.getDirectoryHandle(parts[i], { create: true });
@@ -188,7 +252,13 @@ export async function writeLocalFile(
   const fileHandle: FileSystemFileHandle = await currentHandle.getFileHandle(fileName, {
     create: true,
   });
-  const writable = await (fileHandle as any).createWritable();
-  await writable.write(content);
-  await writable.close();
+  const fileWritableHandle = fileHandle as unknown as WritableCapableFileHandle;
+  if (typeof fileWritableHandle.createWritable === "function") {
+    const writable = await fileWritableHandle.createWritable();
+    await writable.write(content);
+    await writable.close();
+  } else {
+    throw new Error("当前文件句柄不支持写操作 (createWritable 不可用)");
+  }
 }
+

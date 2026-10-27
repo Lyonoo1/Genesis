@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Puzzle, Check, Sparkles, ExternalLink } from "lucide-react";
+import { Puzzle } from "lucide-react";
 
 interface PluginItem {
   id: string;

@@ -13,6 +13,7 @@ import {
   updateProjectApi,
   deleteProjectApi,
 } from "@/lib/api/projects";
+import { useWorkbenchStore } from "./useWorkbenchStore";
 
 const STORAGE_KEY = "genesis_sessions_cache";
 const PROJECTS_KEY = "genesis_projects_cache";
@@ -425,6 +426,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setApprovalMode: (approvalMode) => set({ approvalMode }),
 
   archiveSession: async (id) => {
+    // 若当前会话（或正在推流的会话）正在执行中，先强制停止生成并中止子代理与进程
+    try {
+      const { useChatStore } = await import("@/stores/useChatStore");
+      const chatState = useChatStore.getState();
+      const isActive = get().activeSessionId === id;
+      const shouldStop =
+        chatState.isStreaming &&
+        (chatState.streamingSessionId === id || isActive || !chatState.streamingSessionId);
+      if (shouldStop) {
+        await chatState.stopGeneration(id);
+      }
+    } catch (e) {
+      console.warn("[archiveSession] Failed to stop active generation:", e);
+    }
+
     const next = get().sessions.map((s) =>
       s.id === id ? { ...s, is_archived: true } : s
     );
@@ -562,6 +578,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
     saveCachedSessions(updatedSessions);
     saveCachedProjects(updatedProjects);
+    useWorkbenchStore.getState().migrateDraftWorkbench(newSession.id);
 
     // 异步双写持久化：FastAPI 与 Supabase (非阻塞，绝不卡死前端发送)
     (async () => {
@@ -765,6 +782,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       deleteModalSessionId: null,
     });
     saveCachedSessions(remaining);
+    useWorkbenchStore.getState().deleteSessionWorkbench(id);
 
     try {
       await deleteSessionApi(id);

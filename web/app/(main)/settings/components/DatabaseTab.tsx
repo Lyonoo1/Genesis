@@ -6,7 +6,6 @@ import {
   ExternalLink,
   CheckCircle2,
   HardDrive,
-  RefreshCw,
   Maximize2,
   ShieldAlert,
 } from "lucide-react";

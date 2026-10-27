@@ -115,3 +115,65 @@ textarea::-moz-selection,
     scrollbar-width: none;
   }
 }
+
+/* ==============================================================================
+   按需悬停平滑滚动条 (左侧栏与对话框专属)
+   - 平时默认完全透明隐藏 (scrollbar-thumb 为 transparent)
+   - 只有光标进入该宿主区域 (或直接悬停容器) 时才平滑浮现
+   - 光标离开该区域时自动渐隐
+   ============================================================================== */
+.scrollbar-hover {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.scrollbar-hover::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.scrollbar-hover::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-hover::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+  transition: background-color 0.15s ease-in-out;
+}
+
+/* 1. 悬停在滚动容器自身时显现 */
+.scrollbar-hover:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.scrollbar-hover:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* 2. 光标进入左侧栏区域 (aside / [data-sidebar]) 时显现 */
+aside:hover .scrollbar-hover,
+[data-sidebar]:hover .scrollbar-hover {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+aside:hover .scrollbar-hover::-webkit-scrollbar-thumb,
+[data-sidebar]:hover .scrollbar-hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* 3. 光标进入对话框区域 (#main-chat-container / [data-chat-area]) 时显现 */
+#main-chat-container:hover .scrollbar-hover,
+[data-chat-area]:hover .scrollbar-hover {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+#main-chat-container:hover .scrollbar-hover::-webkit-scrollbar-thumb,
+[data-chat-area]:hover .scrollbar-hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* 4. 光标直接悬停在滚动条滑块上或抓取拖拽时的高亮交互 */
+.scrollbar-hover::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.38) !important;
+}
+.scrollbar-hover::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.55) !important;
+}

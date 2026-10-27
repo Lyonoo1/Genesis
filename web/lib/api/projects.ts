@@ -16,8 +16,19 @@ export interface ProjectUpdatePayload {
   is_archived?: boolean;
 }
 
+interface ApiProjectRaw {
+  id: string;
+  name: string;
+  icon?: string | null;
+  description?: string | null;
+  is_expanded?: boolean;
+  is_archived?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export async function fetchProjectsApi(): Promise<Project[]> {
-  const data = await apiFetch<any[]>("/api/projects", {
+  const data = await apiFetch<ApiProjectRaw[]>("/api/projects", {
     method: "GET",
   });
   return (data || []).map((p) => ({
@@ -35,7 +46,7 @@ export async function fetchProjectsApi(): Promise<Project[]> {
 export async function createProjectApi(
   payload: ProjectCreatePayload
 ): Promise<Project> {
-  const data = await apiFetch<any>("/api/projects", {
+  const data = await apiFetch<ApiProjectRaw>("/api/projects", {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -55,7 +66,7 @@ export async function updateProjectApi(
   projectId: string,
   payload: ProjectUpdatePayload
 ): Promise<Project> {
-  const data = await apiFetch<any>(`/api/projects/${projectId}`, {
+  const data = await apiFetch<ApiProjectRaw>(`/api/projects/${projectId}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });

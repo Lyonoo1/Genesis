@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, ExternalLink } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 
 // 复刻 iOS / macOS 极简开关 Switch

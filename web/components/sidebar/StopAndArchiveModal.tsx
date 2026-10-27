@@ -27,9 +27,14 @@ export function StopAndArchiveModal() {
     const targetId = stopAndArchiveModalSessionId;
     const targetTitle = targetSession?.title || "会话";
 
-    // 1. 如果正在流式响应，停止生成
-    if (isStreaming && streamingSessionId === targetId) {
-      await stopGeneration(targetId);
+    // 1. 如果正在流式响应，强力优先停止生成并中止子代理
+    try {
+      const chatState = useChatStore.getState();
+      if (chatState.isStreaming) {
+        await chatState.stopGeneration(targetId);
+      }
+    } catch (e) {
+      console.warn("Failed to stop generation in modal:", e);
     }
 
     // 2. 归档会话

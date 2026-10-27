@@ -39,6 +39,7 @@ class MessageCreate(BaseModel):
     tool_call_id: Optional[str] = None
     active_skill_id: Optional[Any] = None
     status: MessageStatus = MessageStatus.SUCCESS
+    metrics: Optional[dict[str, Any]] = None
 
 
 class MessageResponse(BaseModel):
@@ -56,6 +57,7 @@ class MessageResponse(BaseModel):
     tool_call_id: Optional[str] = None
     active_skill_id: Optional[Any] = None
     status: str
+    metrics: Optional[dict[str, Any]] = None
     created_at: Any
 
 

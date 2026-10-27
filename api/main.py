@@ -16,17 +16,32 @@ from routers.chat import router as chat_router
 from routers.marketplace import router as marketplace_router
 from routers.usage import router as usage_router
 from routers.models import router as models_router
+from routers.terminal import router as terminal_router
+from routers.preview import router as preview_router
+from contextlib import asynccontextmanager
+from routers.bridge import router as bridge_router
 from routers.db_viewer import router as db_viewer_router
 from core.sqlite_db import init_sqlite_db
 
 # 初始化本地持久化 SQLite 数据库体系
 init_sqlite_db()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    from services.terminal_manager import TerminalManager
+    TerminalManager.get_instance().cleanup_all()
+
+
+is_dev = settings.ENVIRONMENT == "development"
+
 app = FastAPI(
     title="Genesis AI 智能体工作台 Core API",
     version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if is_dev else None,
+    redoc_url="/redoc" if is_dev else None,
+    lifespan=lifespan,
 )
 
 # 挂载业务路由
@@ -38,19 +53,28 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(marketplace_router, prefix="/api")
 app.include_router(usage_router, prefix="/api")
 app.include_router(models_router, prefix="/api")
-app.include_router(db_viewer_router)
+app.include_router(terminal_router, prefix="/api")
+app.include_router(bridge_router, prefix="/api")
+app.include_router(preview_router, prefix="/api")
+app.include_router(preview_router)
+
+# 仅开发环境允许通过 Web 查看和执行任意 SQL
+if is_dev:
+    app.include_router(db_viewer_router)
+
 
 # CORS 配置
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    settings.FRONTEND_URL,
 ]
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in origins:
+    origins.append(settings.FRONTEND_URL)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$" if is_dev else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -124,13 +148,6 @@ async def get_current_user_profile(
     }
 
 
-# 3. 实时文案体验接口 (供你在 main.py 中直接修改测试)
-@app.get("/api/demo/message", tags=["Demo"])
-async def get_demo_message():
-    # ★ 试着修改下面引号里的文案并保存，前端刷新后会立刻看到变化！
-    return {
-        "text": "Hello Genesis! 这是由后端 FastAPI 接口写死的文案。haha哈哈哈哈不该"
-    }
 
 
 if __name__ == "__main__":

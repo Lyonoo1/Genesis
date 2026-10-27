@@ -56,28 +56,30 @@ export function MessageList({ sessionId, bottomSpacerHeight }: MessageListProps)
 
   return (
     <div className="space-y-6">
-      {messages.map((message) => {
-        if (message.role === "user") {
+      {messages
+        .filter((message) => message.role !== "tool" && message.role !== "system")
+        .map((message) => {
+          if (message.role === "user") {
+            return (
+              <div
+                key={message.id}
+                id={`message-turn-${message.id}`}
+                className="scroll-mt-12"
+              >
+                <UserMessageItem message={message} />
+              </div>
+            );
+          }
           return (
             <div
               key={message.id}
-              id={`message-turn-${message.id}`}
+              id={`message-${message.id}`}
               className="scroll-mt-12"
             >
-              <UserMessageItem message={message} />
+              <AssistantMessageItem message={message} />
             </div>
           );
-        }
-        return (
-          <div
-            key={message.id}
-            id={`message-${message.id}`}
-            className="scroll-mt-12"
-          >
-            <AssistantMessageItem message={message} />
-          </div>
-        );
-      })}
+        })}
       {/* 底部动态安全垫片：随输入框展开高度动态弹性支撑，确保滑到底部时最后一条消息绝不被遮挡 */}
       <div
         style={{ height: `${bottomSpacerHeight || 170}px` }}

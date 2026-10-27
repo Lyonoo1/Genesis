@@ -6,6 +6,9 @@ import remarkGfm from "remark-gfm";
 import { FileCode, FileText, ExternalLink } from "lucide-react";
 import { CodeBlock } from "./CodeBlock";
 import { useSettingsStore } from "@/stores/useSettingsStore";
+import { useUIStore } from "@/stores/useUIStore";
+import { useWorkbenchStore } from "@/stores/useWorkbenchStore";
+import { useSessionStore } from "@/stores/useSessionStore";
 
 interface MarkdownRendererProps {
   content: string;
@@ -14,13 +17,71 @@ interface MarkdownRendererProps {
 
 // 辅助函数：判断是否是代码文件路径引用（如 auth.ts, .env, AuthController.java, line 48 等）
 function isFilePathOrReference(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.includes("\n")) return false;
+  if (trimmed.startsWith("file://")) return true;
+  if (/^\.env(\.[a-z0-9_-]+)?$/i.test(trimmed)) return true;
+  if (/^Makefile$/i.test(trimmed)) return true;
   return (
-    /\.(ts|tsx|js|jsx|py|java|json|env|md|css|html|sql|go|rs|sh|yaml|yml)(\b|:|\s)/i.test(
-      text
+    /\.(ts|tsx|js|jsx|py|java|json|env|md|css|html|sql|go|rs|sh|yaml|yml|toml|xml|txt)(\b|:|\s|$)/i.test(
+      trimmed
     ) ||
-    /\bline\s+\d+\b/i.test(text) ||
-    /^\.env/i.test(text)
+    /\bline\s+\d+\b/i.test(trimmed)
   );
+}
+
+// 辅助函数：提取代码块元数据（语言、文件名、文件路径）
+function extractCodeMetadata(
+  className?: string,
+  rawCode: string = "",
+  meta?: string
+): { language: string; filename?: string; filePath?: string } {
+  let language = "plaintext";
+  let filename: string | undefined;
+  let filePath: string | undefined;
+
+  const match = /language-([^\s]+)/.exec(className || "");
+  if (match) {
+    const raw = match[1];
+    if (raw.includes(":")) {
+      const [lang, path] = raw.split(":", 2);
+      language = lang;
+      filePath = path;
+      filename = path.split("/").pop();
+    } else {
+      language = raw;
+    }
+  }
+
+  if (meta) {
+    const titleMatch = /(?:title|filename|file|path)=["']?([^"'\s]+)["']?/i.exec(meta);
+    if (titleMatch) {
+      filePath = titleMatch[1];
+      filename = filePath.split("/").pop();
+    } else if (!filePath && /^[^\s=]+\.[a-zA-Z0-9]+$/.test(meta.trim())) {
+      filePath = meta.trim();
+      filename = filePath.split("/").pop();
+    }
+  }
+
+  if (!filePath) {
+    const firstLine = rawCode.trim().split("\n")[0] || "";
+    const commentMatch = /^(?:\/\/|#|\/\*|--)\s*(?:filepath|file|path|filename):\s*([^\s*]+)/i.exec(firstLine);
+    if (commentMatch) {
+      filePath = commentMatch[1];
+      filename = filePath.split("/").pop();
+    }
+  }
+
+  if (filePath) {
+    filePath = filePath.replace(/["']/g, "").trim();
+    filename = filePath.split("/").pop() || filename;
+  }
+  if (filename) {
+    filename = filename.replace(/["']/g, "").trim();
+  }
+
+  return { language, filename, filePath };
 }
 
 export function MarkdownRenderer({
@@ -59,9 +120,112 @@ export function MarkdownRenderer({
     };
   }, [content, isStreaming]);
 
+  const handleOpenFile = React.useCallback(async (rawPath: string) => {
+    if (!rawPath) return;
+
+    // 1. 展开右侧边栏（如果处于收起状态）
+    const uiStore = useUIStore.getState();
+    if (!uiStore.isRightSidebarOpen) {
+      uiStore.openRightSidebar("files");
+    }
+
+    // 2. 清理路径并剥离协议头与行号
+    let clean = rawPath.trim();
+    clean = clean.replace(/^[(`"']+|[)`"']+$/g, "");
+    clean = clean.replace(/(?:#L|:)\d+$/, "");
+
+    if (clean.startsWith("file://")) {
+      clean = clean.replace(/^file:\/\//, "");
+      const markerIdx = clean.indexOf("agentProject/");
+      if (markerIdx !== -1) {
+        clean = clean.slice(markerIdx + "agentProject/".length);
+      } else {
+        const genesisIdx = clean.indexOf("Genesis/");
+        if (genesisIdx !== -1) {
+          clean = clean.slice(genesisIdx);
+        }
+      }
+    }
+
+    clean = clean.replace(/^\/+/, "");
+    const fileName = clean.split("/").pop() || clean;
+
+    // 3. 异步尝试读取本地磁盘真实内容
+    let content = "";
+    try {
+      const { getDirectoryHandle, readLocalFile, scanDirectory } = await import(
+        "@/lib/workspace/localWorkspaceManager"
+      );
+      const activeSession = useSessionStore.getState().sessions.find(
+        (s) => s.id === useSessionStore.getState().activeSessionId
+      );
+      const targetKey = activeSession?.project_id || "genesis-default-workspace";
+      let handle = await getDirectoryHandle(targetKey);
+      if (!handle && targetKey !== "genesis-default-workspace") {
+        handle = await getDirectoryHandle("genesis-default-workspace");
+      }
+
+      if (handle) {
+        // 若只有纯文件名，在目录树中智能反查其完整相对路径
+        if (!clean.includes("/")) {
+          try {
+            const tree = await scanDirectory(handle, "", 0, 4);
+            const findPath = (nodes: any[]): string | null => {
+              for (const n of nodes) {
+                if (n.kind === "file" && (n.name === clean || n.path.endsWith("/" + clean))) {
+                  return n.path;
+                }
+                if (n.children) {
+                  const p = findPath(n.children);
+                  if (p) return p;
+                }
+              }
+              return null;
+            };
+            const matched = findPath(tree);
+            if (matched) {
+              clean = matched;
+            }
+          } catch {}
+        }
+
+        try {
+          const fileRes = await readLocalFile(handle, clean);
+          content = fileRes.content;
+        } catch {
+          if (clean.startsWith("Genesis/")) {
+            const sub = clean.replace(/^Genesis\//, "");
+            try {
+              const fileRes = await readLocalFile(handle, sub);
+              content = fileRes.content;
+              clean = sub;
+            } catch {}
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[MarkdownRenderer] 读取本地文件失败，采用空模板打开:", err);
+    }
+
+    // 4. 调用工作台调度器打开或激活该文件 Tab
+    const workbench = useWorkbenchStore.getState();
+    workbench.openFileInExplorer({
+      filePath: clean,
+      title: fileName,
+      content: content || `// ${clean}\n// (从工作区加载中...)`,
+    });
+  }, []);
+
   const components: Components = useMemo(
     () => ({
-      code({ className, children, ...props }) {
+      code({
+        node,
+        className,
+        children,
+        ...props
+      }: React.ComponentPropsWithoutRef<"code"> & {
+        node?: { data?: { meta?: string | null } };
+      }) {
         const match = /language-(\w+)/.exec(className || "");
         const isInline = !match && !String(children).includes("\n");
 
@@ -71,10 +235,21 @@ export function MarkdownRenderer({
 
           if (isFileRef) {
             return (
-              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 my-0.5 rounded-[5px] bg-[#1E2430] border border-[#2A4365]/60 text-[#60A5FA] font-mono text-[13px] hover:bg-[#233044] transition-colors shadow-sm">
-                <FileCode className="w-3.5 h-3.5 text-[#60A5FA] shrink-0" />
-                <span className="leading-none">{children}</span>
-              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleOpenFile(textContent);
+                }}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 my-0.5 rounded-[5px] bg-[#1E2430] hover:bg-[#283852] border border-[#2A4365]/60 hover:border-[#3B82F6]/60 text-[#60A5FA] hover:text-white font-mono text-[13px] transition-all shadow-sm cursor-pointer group select-none text-left"
+                title={`点击在工作台中预览：${textContent}`}
+              >
+                <FileCode className="w-3.5 h-3.5 text-[#60A5FA] group-hover:text-blue-300 shrink-0 group-hover:scale-105 transition-transform" />
+                <span className="leading-none underline decoration-transparent group-hover:decoration-blue-400/50 underline-offset-2 transition-all">
+                  {children}
+                </span>
+              </button>
             );
           }
 
@@ -88,10 +263,22 @@ export function MarkdownRenderer({
           );
         }
 
-        const language = match ? match[1] : "plaintext";
         const codeString = String(children).replace(/\n$/, "");
+        const meta = node?.data?.meta;
+        const { language, filename, filePath } = extractCodeMetadata(
+          className,
+          codeString,
+          meta || undefined
+        );
 
-        return <CodeBlock language={language} code={codeString} />;
+        return (
+          <CodeBlock
+            language={language}
+            code={codeString}
+            filename={filename}
+            filePath={filePath}
+          />
+        );
       },
 
       p({ children }) {
@@ -198,19 +385,26 @@ export function MarkdownRenderer({
 
       a({ href, children }) {
         const textContent = String(children);
-        const isFile = isFilePathOrReference(textContent);
+        const isFile = isFilePathOrReference(textContent) || (href ? isFilePathOrReference(href) : false);
 
         if (isFile) {
+          const targetPath = href && href.startsWith("file://") ? href : textContent;
           return (
-            <a
-              href={href}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[5px] bg-[#1E2430] hover:bg-[#253247] border border-[#2B4C7E]/50 text-[#58A6FF] hover:text-[#79B8FF] font-mono text-[13px] transition-all my-0.5 shadow-sm group"
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                handleOpenFile(targetPath);
+              }}
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[5px] bg-[#1E2430] hover:bg-[#283852] border border-[#2B4C7E]/50 hover:border-[#3B82F6]/60 text-[#58A6FF] hover:text-white font-mono text-[13px] transition-all my-0.5 shadow-sm group cursor-pointer select-none text-left"
+              title={`点击在工作台中预览：${textContent}`}
             >
-              <FileText className="w-3.5 h-3.5 text-[#58A6FF] shrink-0 group-hover:scale-105 transition-transform" />
-              <span>{children}</span>
-            </a>
+              <FileText className="w-3.5 h-3.5 text-[#58A6FF] group-hover:text-blue-300 shrink-0 group-hover:scale-105 transition-transform" />
+              <span className="underline decoration-transparent group-hover:decoration-blue-400/50 underline-offset-2 transition-all">
+                {children}
+              </span>
+            </button>
           );
         }
 
@@ -227,7 +421,7 @@ export function MarkdownRenderer({
         );
       },
     }),
-    []
+    [handleOpenFile]
   );
 
   return (

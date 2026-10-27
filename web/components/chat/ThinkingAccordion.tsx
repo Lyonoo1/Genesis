@@ -8,6 +8,7 @@ interface ThinkingAccordionProps {
   reasoning: string;
   isStreaming?: boolean;
   hasContent?: boolean;
+  hasTools?: boolean;
   durationMs?: number;
 }
 
@@ -24,10 +25,11 @@ export function ThinkingAccordion({
   reasoning,
   isStreaming = false,
   hasContent = false,
+  hasTools = false,
   durationMs,
 }: ThinkingAccordionProps) {
-  // 是否正在进行思维链思考 (推流中且尚未开始输出正文)
-  const isThinking = isStreaming && !hasContent;
+  // 是否正在进行纯思维链推理 (推流中且尚未开始输出正文与工具)
+  const isThinking = isStreaming && !hasContent && !hasTools;
 
   // 思考中默认展开；思考完成后自动收起折叠
   const [isOpen, setIsOpen] = useState(isThinking);
@@ -35,7 +37,8 @@ export function ThinkingAccordion({
   // 计时器：精确到小数点后一位 (单位秒)
   const [seconds, setSeconds] = useState(() => {
     if (durationMs) return durationMs / 1000;
-    return 0.1;
+    // 历史消息依据内容长度合理估算初始值 (约 40 字符/秒)
+    return Math.max(0.5, Number((reasoning.length / 40).toFixed(1)));
   });
 
   const startTimeRef = useRef<number>(Date.now());
@@ -54,12 +57,7 @@ export function ThinkingAccordion({
 
   // 2. 思考耗时高频计时器 (每 100ms 更新一次，精准呈现小数点后一位)
   useEffect(() => {
-    if (!isThinking) {
-      if (durationMs) {
-        setSeconds(Math.max(0.1, durationMs / 1000));
-      }
-      return;
-    }
+    if (!isThinking) return;
 
     startTimeRef.current = Date.now();
     const interval = setInterval(() => {
@@ -68,7 +66,7 @@ export function ThinkingAccordion({
     }, 100);
 
     return () => clearInterval(interval);
-  }, [isThinking, durationMs]);
+  }, [isThinking]);
 
   if (!reasoning) return null;
 
@@ -81,10 +79,10 @@ export function ThinkingAccordion({
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className="inline-flex items-center gap-1 text-xs text-[#8E8E93] hover:text-[#ECECED] transition-colors cursor-pointer py-0.5 select-none group"
+          className="inline-flex items-center gap-1.5 text-xs text-[#8E8E93] hover:text-[#ECECED] transition-colors cursor-pointer py-0.5 select-none group"
           title={isOpen ? "收起思考过程" : "展开思考过程"}
         >
-          <span>用时 {durationText}</span>
+          <span>{isThinking ? "深度思考中..." : `已深度思考 (${durationText})`}</span>
           {isOpen ? (
             <ChevronDown className="w-3.5 h-3.5 text-[#6E6E78] group-hover:text-white transition-colors" />
           ) : (

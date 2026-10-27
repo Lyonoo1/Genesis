@@ -69,9 +69,9 @@ export function Sidebar({
 
   return (
     <>
-      {/* 1. 文档流占位容器：实现固定展开时的平滑宽度推拉动画 (时长增加 0.2s 至 600ms) */}
+      {/* 1. 文档流占位容器：实现固定展开时的平滑宽度推拉动画 (时长 500ms) */}
       <div
-        className={`h-full flex-shrink-0 overflow-hidden transition-[width] duration-[600ms] ease-out select-none ${
+        className={`h-full flex-shrink-0 overflow-hidden transition-[width] duration-500 ease-out select-none ${
           isLeftSidebarOpen ? "w-[260px]" : "w-0"
         }`}
       />
@@ -79,12 +79,13 @@ export function Sidebar({
       {/* 
         2. 侧边栏实体：
         - 容器常驻纯黑底色 bg-[#161618]，鼠标 hover 滑出时呈现黑色无阴影；
-        - 点击正式打开时，内部灰色质感层从左向右平滑滑入，动画时长 600ms 与侧栏完全同步。
+        - 点击正式打开时，内部灰色质感层从左向右平滑滑入，动画时长与侧栏完全同步。
       */}
       <aside
+        data-sidebar="true"
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
-        className={`fixed left-0 top-0 bottom-0 w-[260px] flex flex-col select-none h-full overflow-hidden transition-all duration-[600ms] ease-out bg-[#161618] ${
+        className={`fixed left-0 top-0 bottom-0 w-[260px] flex flex-col select-none h-full overflow-hidden transition-[transform,border-color] duration-500 ease-out bg-[#161618] ${
           isHoverFloating
             ? "z-40 translate-x-0 border-r border-[#27272A] shadow-none"
             : isLeftSidebarOpen
@@ -94,7 +95,7 @@ export function Sidebar({
       >
         {/* 灰色质感背景层：黑色背景转为灰色背景的动画时长单独设成 200ms 从左向右滑入展开 */}
         <div
-          className={`absolute inset-0 pointer-events-none transition-transform duration-[200ms] ease-out bg-gradient-to-b from-[#292A2E] via-[#262628] to-[#262628] border-r border-[#323232] z-0 ${
+          className={`absolute inset-0 pointer-events-none transition-transform duration-200 ease-out bg-gradient-to-b from-[#292A2E] via-[#262628] to-[#262628] border-r border-[#323232] z-0 ${
             isLeftSidebarOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         />

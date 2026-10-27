@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   Folder,
@@ -9,7 +9,6 @@ import {
   MoreHorizontal,
   Plus,
   Trash2,
-  Pin,
   Archive,
   Check,
   X,
@@ -22,6 +21,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { Session, Project } from "@/types";
 import { EditProjectModal, getProjectIconComponent } from "./EditProjectModal";
 import { EditSessionModal } from "./EditSessionModal";
+import { SidebarSessionItem } from "./SidebarSessionItem";
 import { saveDirectoryHandle } from "@/lib/workspace/localWorkspaceManager";
 
 export function ProjectTree() {
@@ -35,11 +35,9 @@ export function ProjectTree() {
     setActiveSessionId,
     togglePinSession,
     archiveSession,
-    openDeleteModal,
     addProject,
     updateProjectName,
     archiveProject,
-    deleteProject,
     createSession,
     editingSessionId,
     setEditingSessionId,
@@ -48,8 +46,6 @@ export function ProjectTree() {
     showArchiveToast,
     openDeleteProjectModal,
   } = useSessionStore();
-
-  const { isStreaming, streamingSessionId } = useChatStore();
 
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [activeProjectMenuId, setActiveProjectMenuId] = useState<string | null>(null);
@@ -151,14 +147,24 @@ export function ProjectTree() {
     }
 
     try {
-      const handle: FileSystemDirectoryHandle = await (window as any).showDirectoryPicker({
+      const handle: FileSystemDirectoryHandle = await (
+        window as Window & {
+          showDirectoryPicker: (opts?: {
+            mode?: string;
+          }) => Promise<FileSystemDirectoryHandle>;
+        }
+      ).showDirectoryPicker({
         mode: "readwrite",
       });
 
       const folderName = handle.name || "本地项目";
       const newProj = addProject(folderName, undefined, "folder");
       if (newProj && newProj.id) {
-        await saveDirectoryHandle(newProj.id, handle);
+        try {
+          await saveDirectoryHandle(newProj.id, handle);
+        } catch (dbErr) {
+          console.warn("保存本地目录句柄到 IndexedDB 失败:", dbErr);
+        }
         setActiveProjectId(newProj.id);
         if (!newProj.isExpanded) {
           toggleProjectExpand(newProj.id);
@@ -169,8 +175,13 @@ export function ProjectTree() {
           router.push(`/chat/${newSession.id}`);
         }
       }
-    } catch (err: any) {
-      if (err?.name !== "AbortError") {
+    } catch (err: unknown) {
+      if (
+        err &&
+        typeof err === "object" &&
+        "name" in err &&
+        err.name !== "AbortError"
+      ) {
         console.error("选择文件夹创建项目失败:", err);
         setIsCreateProjectModalOpen(true);
       }
@@ -186,12 +197,6 @@ export function ProjectTree() {
     setEditingSessionTitle("");
   };
 
-  const handleStartEditSession = (session: Session) => {
-    setEditingSessionId(session.id);
-    setEditingSessionTitle(session.title);
-    setActiveMenuId(null);
-  };
-
   const handleSelectSession = (session: Session, projectId?: string) => {
     if (projectId) setActiveProjectId(projectId);
     setActiveSessionId(session.id);
@@ -203,13 +208,41 @@ export function ProjectTree() {
     toggleProjectExpand(project.id);
   };
 
-  // 过滤未归档的会话
-  const activeSessions = (sessions || []).filter((s) => s && !s.is_archived);
-  // 独立会话（未归属于任何项目的会话）展示在“最近”
-  const standaloneSessions = activeSessions.filter((s) => s && !s.project_id);
+  // 统一的归档会话处理函数（按需从 useChatStore.getState() 获取状态，解耦打字流式 Re-render）
+  const handleArchiveSession = (session: Session) => {
+    const { isStreaming, streamingSessionId } = useChatStore.getState();
+    const isExecuting =
+      isStreaming && (streamingSessionId === session.id || activeSessionId === session.id);
+    if (isExecuting) {
+      openStopAndArchiveModal(session.id);
+    } else {
+      archiveSession(session.id);
+      if (activeSessionId === session.id) {
+        const remaining = sessions.filter(
+          (s) => s.id !== session.id && !s.is_archived
+        );
+        router.push(remaining.length > 0 ? `/chat/${remaining[0].id}` : "/chat");
+      }
+      showArchiveToast("session", session.id, session.title);
+    }
+  };
+
+  // 过滤未归档的会话与分组（加 useMemo 避免每次 render 重复 O(N) 遍历）
+  const { standaloneSessions, sessionsByProjectId } = useMemo(() => {
+    const active = (sessions || []).filter((s) => s && !s.is_archived);
+    const standalone = active.filter((s) => s && !s.project_id);
+    const byProject: Record<string, Session[]> = {};
+    active.forEach((s) => {
+      if (s.project_id) {
+        if (!byProject[s.project_id]) byProject[s.project_id] = [];
+        byProject[s.project_id].push(s);
+      }
+    });
+    return { standaloneSessions: standalone, sessionsByProjectId: byProject };
+  }, [sessions]);
 
   return (
-    <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-3 select-none scrollbar-thin space-y-4">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-3 select-none scrollbar-hover space-y-4">
       {/* 1. 项目分区 (Projects) */}
       <div className="space-y-1">
         <div className="group/project-header relative flex items-center justify-between px-2.5 pb-1 text-[12px] font-medium text-[#7E7E82] h-7">
@@ -368,377 +401,237 @@ export function ProjectTree() {
           (projects || [])
             .filter((p) => p && !p.is_archived)
             .map((project) => {
-            const projectSessions = activeSessions.filter(
-              (s) => s && s.project_id === project.id
-            );
+              const projectSessions = sessionsByProjectId[project.id] || [];
+              const isExpanded = !!project.isExpanded;
+              const isProjectMenuOpen = activeProjectMenuId === project.id;
+              const isEditing = editingProjectId === project.id;
 
-            const isExpanded = !!project.isExpanded;
-            const isProjectMenuOpen = activeProjectMenuId === project.id;
-            const isEditing = editingProjectId === project.id;
-
-            return (
-              <div key={project.id} className="space-y-0.5">
-                {/* 项目文件夹头部行 */}
-                {isEditing ? (
-                  <div
-                    className="flex items-center gap-2 px-2.5 h-8 rounded-[8px] bg-[#373839] border border-white/20 w-full"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Folder className="w-4 h-4 text-[#ECECED] stroke-[1.6] shrink-0" />
-                    <input
-                      type="text"
-                      autoFocus
-                      value={editingProjectName}
-                      onChange={(e) => setEditingProjectName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          handleSaveProjectName(project.id);
-                        } else if (e.key === "Escape") {
-                          setEditingProjectId(null);
-                        }
-                      }}
-                      className="w-full bg-transparent text-[13.5px] text-white outline-none border-none p-0"
-                    />
-                    <div className="flex items-center gap-0.5 shrink-0 text-[#8E8E93]">
-                      <button
-                        type="button"
-                        onClick={() => handleSaveProjectName(project.id)}
-                        className="p-1 rounded hover:text-white hover:bg-white/10 transition-colors"
-                        title="确认 (Enter)"
-                      >
-                        <Check className="w-3.5 h-3.5 text-accent-green" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingProjectId(null)}
-                        className="p-1 rounded hover:text-white hover:bg-white/10 transition-colors"
-                        title="取消 (Esc)"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    onClick={() => handleToggleProject(project)}
-                    className="group/project relative flex items-center justify-between px-2.5 h-8 rounded-[8px] text-[13.5px] font-normal text-[#ECECED] hover:bg-white/[0.05] transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                      {React.createElement(getProjectIconComponent(project.icon), {
-                        className: "w-4 h-4 text-[#ECECED] stroke-[1.6] shrink-0",
-                      })}
-                      <span className="truncate">{project.name}</span>
-                    </div>
-
-                    {/* 右侧悬浮操作按钮组：参考图二设计，悬浮展现或展开菜单时保持展现 */}
+              return (
+                <div key={project.id} className="space-y-0.5">
+                  {/* 项目文件夹头部行 */}
+                  {isEditing ? (
                     <div
-                      className={`flex items-center gap-0.5 shrink-0 ${
-                        isProjectMenuOpen
-                          ? "opacity-100"
-                          : "opacity-0 group-hover/project:opacity-100"
-                      } transition-opacity`}
+                      className="flex items-center gap-2 px-2.5 h-8 rounded-[8px] bg-[#373839] border border-white/20 w-full"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      {/* 1. 更多操作按钮 (...) */}
-                      <div className="relative" data-menu-container>
-                        <button
-                          type="button"
-                          data-menu-container
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveProjectMenuId(
-                              isProjectMenuOpen ? null : project.id
-                            );
-                          }}
-                          className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                          title="项目选项"
-                        >
-                          <MoreHorizontal className="w-3.5 h-3.5" />
-                        </button>
-
-                        {/* 下拉浮层 */}
-                        {isProjectMenuOpen && (
-                          <div
-                            data-menu-container
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => e.stopPropagation()}
-                            className="absolute right-0 top-7 z-50 w-36 py-1 bg-[#1E1E20] border border-hairline rounded-lg shadow-xl text-xs space-y-0.5 animate-in fade-in zoom-in-95"
-                          >
-                            <button
-                              type="button"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                setActiveProjectMenuId(null);
-                                if (!project.isExpanded) {
-                                  toggleProjectExpand(project.id);
-                                }
-                                setActiveProjectId(project.id);
-                                const newSess = await createSession("新对话", project.id);
-                                if (newSess?.id) {
-                                  router.push(`/chat/${newSess.id}`);
-                                }
-                              }}
-                              className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
-                            >
-                              <Plus className="w-3.5 h-3.5 text-[#8E8E93]" />
-                              <span>添加新对话</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditingProjectModalTarget(project);
-                                setActiveProjectMenuId(null);
-                              }}
-                              className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
-                            >
-                              <Edit3 className="w-3.5 h-3.5 text-[#8E8E93]" />
-                              <span>修改项目信息</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setActiveProjectMenuId(null);
-                                archiveProject(project.id);
-                                const currentSess = sessions.find((s) => s.id === activeSessionId);
-                                if (currentSess?.project_id === project.id) {
-                                  const remaining = sessions.filter(
-                                    (s) => s.id !== activeSessionId && s.project_id !== project.id && !s.is_archived
-                                  );
-                                  router.push(remaining.length > 0 ? `/chat/${remaining[0].id}` : "/chat");
-                                }
-                                showArchiveToast("project", project.id, project.name);
-                              }}
-                              className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
-                            >
-                              <Archive className="w-3.5 h-3.5 text-[#8E8E93]" />
-                              <span>归档项目</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setActiveProjectMenuId(null);
-                                openDeleteProjectModal(project.id);
-                              }}
-                              className="w-full px-2.5 py-1.5 flex items-center gap-2 text-accent-coral hover:bg-accent-coral/10 text-left cursor-pointer"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              <span>删除项目</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 2. 添加新对话按钮 (截图同款 SquarePen 图标) */}
-                      <button
-                        type="button"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          if (!project.isExpanded) {
-                            toggleProjectExpand(project.id);
-                          }
-                          setActiveProjectId(project.id);
-                          const newSess = await createSession("新对话", project.id);
-                          if (newSess?.id) {
-                            router.push(`/chat/${newSess.id}`);
+                      <Folder className="w-4 h-4 text-[#ECECED] stroke-[1.6] shrink-0" />
+                      <input
+                        type="text"
+                        autoFocus
+                        value={editingProjectName}
+                        onChange={(e) => setEditingProjectName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            handleSaveProjectName(project.id);
+                          } else if (e.key === "Escape") {
+                            setEditingProjectId(null);
                           }
                         }}
-                        className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                        title="在当前项目下添加新对话"
-                      >
-                        <SquarePen className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-              {/* 展开的会话列表：截图同款无竖线、无多余缩进断层，文本对齐文件夹标题 */}
-              {isExpanded && (
-                <div className="space-y-0.5 my-0.5">
-                  {projectSessions.length === 0 ? (
-                    <div className="pl-7 py-1 text-[12px] text-codex-subtle">
-                      暂无会话
+                        className="w-full bg-transparent text-[13.5px] text-white outline-none border-none p-0"
+                      />
+                      <div className="flex items-center gap-0.5 shrink-0 text-[#8E8E93]">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveProjectName(project.id)}
+                          className="p-1 rounded hover:text-white hover:bg-white/10 transition-colors"
+                          title="确认 (Enter)"
+                        >
+                          <Check className="w-3.5 h-3.5 text-accent-green" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingProjectId(null)}
+                          className="p-1 rounded hover:text-white hover:bg-white/10 transition-colors"
+                          title="取消 (Esc)"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ) : (
-                    projectSessions.map((session) => {
-                      const isActive = activeSessionId === session.id;
-                      const isMenuOpen = activeMenuId === session.id;
-                      const isEditing = editingSessionId === session.id;
+                    <div
+                      onClick={() => handleToggleProject(project)}
+                      className="group/project relative flex items-center justify-between px-2.5 h-8 rounded-[8px] text-[13.5px] font-normal text-[#ECECED] hover:bg-white/[0.05] transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                        {React.createElement(getProjectIconComponent(project.icon), {
+                          className: "w-4 h-4 text-[#ECECED] stroke-[1.6] shrink-0",
+                        })}
+                        <span className="truncate">{project.name}</span>
+                      </div>
 
-                      if (isEditing) {
-                        return (
-                          <div
-                            key={session.id}
-                            className="flex items-center gap-2 pl-7 pr-2.5 h-8 rounded-[8px] bg-[#373839] border border-white/20 w-full"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <input
-                              type="text"
-                              autoFocus
-                              value={editingSessionTitle}
-                              onChange={(e) =>
-                                setEditingSessionTitle(e.target.value)
-                              }
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  handleSaveSessionTitle(session.id);
-                                } else if (e.key === "Escape") {
-                                  setEditingSessionId(null);
-                                }
-                              }}
-                              className="w-full bg-transparent text-[13.5px] text-white outline-none border-none p-0"
-                            />
-                            <div className="flex items-center gap-0.5 shrink-0 text-[#8E8E93]">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleSaveSessionTitle(session.id)
-                                }
-                                className="p-1 rounded hover:text-white hover:bg-white/10 transition-colors"
-                                title="确认 (Enter)"
-                              >
-                                <Check className="w-3.5 h-3.5 text-accent-green" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setEditingSessionId(null)}
-                                className="p-1 rounded hover:text-white hover:bg-white/10 transition-colors"
-                                title="取消 (Esc)"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      return (
-                        <div
-                          key={session.id}
-                          className={`group/session relative flex items-center justify-between pl-7 pr-2.5 h-8 rounded-[8px] text-[13.5px] cursor-pointer transition-colors ${
-                            isActive
-                              ? "bg-[#373839] text-white font-normal"
-                              : "text-[#ECECED] hover:bg-white/[0.05] font-normal"
-                          }`}
-                          onClick={() =>
-                            handleSelectSession(session, project.id)
-                          }
-                        >
-                          <div className="flex items-center gap-1.5 min-w-0 pr-2">
-                            {session.pinned && (
-                              <Pin className="w-3 h-3 text-accent-coral fill-accent-coral shrink-0 rotate-45" />
-                            )}
-                            <span className="truncate">{session.title}</span>
-                          </div>
-
-                          {/* 悬浮操作菜单与独立归档按钮组 */}
-                          <div
+                      {/* 右侧悬浮操作按钮组 */}
+                      <div
+                        className={`flex items-center gap-0.5 shrink-0 ${
+                          isProjectMenuOpen
+                            ? "opacity-100"
+                            : "opacity-0 group-hover/project:opacity-100"
+                        } transition-opacity`}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {/* 1. 更多操作按钮 (...) */}
+                        <div className="relative" data-menu-container>
+                          <button
+                            type="button"
                             data-menu-container
-                            className={`flex items-center gap-0.5 ${
-                              isActive || isMenuOpen
-                                ? "opacity-100"
-                                : "opacity-0 group-hover/session:opacity-100"
-                            } transition-opacity`}
-                            onClick={(e) => e.stopPropagation()}
                             onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveProjectMenuId(
+                                isProjectMenuOpen ? null : project.id
+                              );
+                            }}
+                            className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+                            title="项目选项"
                           >
-                            {/* 1. 更多操作按钮 (...) */}
-                            <div className="relative" data-menu-container>
+                            <MoreHorizontal className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* 下拉浮层 */}
+                          {isProjectMenuOpen && (
+                            <div
+                              data-menu-container
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute right-0 top-7 z-50 w-36 py-1 bg-[#1E1E20] border border-hairline rounded-lg shadow-xl text-xs space-y-0.5 animate-in fade-in zoom-in-95"
+                            >
                               <button
                                 type="button"
-                                data-menu-container
-                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  setActiveProjectMenuId(null);
+                                  if (!project.isExpanded) {
+                                    toggleProjectExpand(project.id);
+                                  }
+                                  setActiveProjectId(project.id);
+                                  const newSess = await createSession("新对话", project.id);
+                                  if (newSess?.id) {
+                                    router.push(`/chat/${newSess.id}`);
+                                  }
+                                }}
+                                className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
+                              >
+                                <Plus className="w-3.5 h-3.5 text-[#8E8E93]" />
+                                <span>添加新对话</span>
+                              </button>
+                              <button
+                                type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setActiveMenuId(
-                                    isMenuOpen ? null : session.id
-                                  );
+                                  setEditingProjectModalTarget(project);
+                                  setActiveProjectMenuId(null);
                                 }}
-                                className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                                title="更多操作"
+                                className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
                               >
-                                <MoreHorizontal className="w-3.5 h-3.5" />
+                                <Edit3 className="w-3.5 h-3.5 text-[#8E8E93]" />
+                                <span>修改项目信息</span>
                               </button>
-
-                              {/* 下拉浮层 */}
-                              {isMenuOpen && (
-                                <div
-                                  data-menu-container
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="absolute right-0 top-7 z-50 w-36 py-1 bg-[#1E1E20] border border-hairline rounded-lg shadow-xl text-xs space-y-0.5 animate-in fade-in zoom-in-95"
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setEditingSessionModalTarget(session);
-                                      setActiveMenuId(null);
-                                    }}
-                                    className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
-                                  >
-                                    <Edit3 className="w-3.5 h-3.5 text-[#8E8E93]" />
-                                    <span>修改对话信息</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      togglePinSession(session.id);
-                                      setActiveMenuId(null);
-                                    }}
-                                    className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
-                                  >
-                                    <Pin className="w-3.5 h-3.5 text-[#8E8E93]" />
-                                    <span>
-                                      {session.pinned ? "取消置顶" : "置顶会话"}
-                                    </span>
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-
-                            {/* 2. 独立直接归档按钮 */}
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const isExecuting =
-                                  isStreaming && streamingSessionId === session.id;
-                                if (isExecuting) {
-                                  openStopAndArchiveModal(session.id);
-                                } else {
-                                  archiveSession(session.id);
-                                  if (activeSessionId === session.id) {
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveProjectMenuId(null);
+                                  archiveProject(project.id);
+                                  const currentSess = sessions.find((s) => s.id === activeSessionId);
+                                  if (currentSess?.project_id === project.id) {
                                     const remaining = sessions.filter(
-                                      (s) => s.id !== session.id && !s.is_archived
+                                      (s) => s.id !== activeSessionId && s.project_id !== project.id && !s.is_archived
                                     );
                                     router.push(remaining.length > 0 ? `/chat/${remaining[0].id}` : "/chat");
                                   }
-                                  showArchiveToast("session", session.id, session.title);
-                                }
-                              }}
-                              className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                              title="直接归档对话"
-                            >
-                              <Archive className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                                  showArchiveToast("project", project.id, project.name);
+                                }}
+                                className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
+                              >
+                                <Archive className="w-3.5 h-3.5 text-[#8E8E93]" />
+                                <span>归档项目</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveProjectMenuId(null);
+                                  openDeleteProjectModal(project.id);
+                                }}
+                                className="w-full px-2.5 py-1.5 flex items-center gap-2 text-accent-coral hover:bg-accent-coral/10 text-left cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>删除项目</span>
+                              </button>
+                            </div>
+                          )}
                         </div>
-                      );
-                    })
+
+                        {/* 2. 添加新对话按钮 */}
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (!project.isExpanded) {
+                              toggleProjectExpand(project.id);
+                            }
+                            setActiveProjectId(project.id);
+                            const newSess = await createSession("新对话", project.id);
+                            if (newSess?.id) {
+                              router.push(`/chat/${newSess.id}`);
+                            }
+                          }}
+                          className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+                          title="在当前项目下添加新对话"
+                        >
+                          <SquarePen className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 展开的会话列表 */}
+                  {isExpanded && (
+                    <div className="space-y-0.5 my-0.5">
+                      {projectSessions.length === 0 ? (
+                        <div className="pl-7 py-1 text-[12px] text-codex-subtle">
+                          暂无会话
+                        </div>
+                      ) : (
+                        projectSessions.map((session) => (
+                          <SidebarSessionItem
+                            key={session.id}
+                            session={session}
+                            isActive={activeSessionId === session.id}
+                            isMenuOpen={activeMenuId === session.id}
+                            isEditing={editingSessionId === session.id}
+                            editingTitle={editingSessionTitle}
+                            indent={true}
+                            onSelect={() => handleSelectSession(session, project.id)}
+                            onToggleMenu={() =>
+                              setActiveMenuId(activeMenuId === session.id ? null : session.id)
+                            }
+                            onOpenEditModal={() => {
+                              setEditingSessionModalTarget(session);
+                              setActiveMenuId(null);
+                            }}
+                            onTogglePin={() => {
+                              togglePinSession(session.id);
+                              setActiveMenuId(null);
+                            }}
+                            onArchive={() => handleArchiveSession(session)}
+                            onChangeEditingTitle={setEditingSessionTitle}
+                            onSaveTitle={() => handleSaveSessionTitle(session.id)}
+                            onCancelEditing={() => {
+                              setEditingSessionId(null);
+                              setEditingSessionTitle("");
+                            }}
+                          />
+                        ))
+                      )}
+                    </div>
                   )}
                 </div>
-              )}
-            </div>
-          );
-        })}
+              );
+            })}
       </div>
 
-      {/* 2. 最近分区 (Recent) - hover 展现 > 箭头 (截图同款) */}
+      {/* 2. 最近分区 (Recent) */}
       <div className="pt-2 group/recent-header">
         <button
           type="button"
@@ -762,169 +655,36 @@ export function ProjectTree() {
                 暂无独立对话
               </div>
             ) : (
-              standaloneSessions.map((session) => {
-                const isActive = activeSessionId === session.id;
-                const isMenuOpen = activeMenuId === session.id;
-                const isEditing = editingSessionId === session.id;
-
-                if (isEditing) {
-                  return (
-                    <div
-                      key={session.id}
-                      className="flex items-center gap-2 px-2.5 h-8 rounded-[8px] bg-[#373839] border border-white/20 w-full"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <input
-                        type="text"
-                        autoFocus
-                        value={editingSessionTitle}
-                        onChange={(e) =>
-                          setEditingSessionTitle(e.target.value)
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            handleSaveSessionTitle(session.id);
-                          } else if (e.key === "Escape") {
-                            setEditingSessionId(null);
-                          }
-                        }}
-                        className="w-full bg-transparent text-[13.5px] text-white outline-none border-none p-0"
-                      />
-                      <div className="flex items-center gap-0.5 shrink-0 text-[#8E8E93]">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleSaveSessionTitle(session.id)
-                          }
-                          className="p-1 rounded hover:text-white hover:bg-white/10 transition-colors"
-                          title="确认 (Enter)"
-                        >
-                          <Check className="w-3.5 h-3.5 text-accent-green" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingSessionId(null)}
-                          className="p-1 rounded hover:text-white hover:bg-white/10 transition-colors"
-                          title="取消 (Esc)"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div
-                    key={session.id}
-                    onClick={() =>
-                      handleSelectSession(session, session.project_id)
-                    }
-                    className={`group/recent-session relative flex items-center justify-between px-2.5 h-8 rounded-[8px] text-[13.5px] cursor-pointer transition-colors ${
-                      isActive
-                        ? "bg-[#373839] text-white font-normal"
-                        : "text-[#ECECED] hover:bg-white/[0.05] font-normal"
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0 pr-2">
-                      {session.pinned && (
-                        <Pin className="w-3 h-3 text-accent-coral fill-accent-coral shrink-0 rotate-45" />
-                      )}
-                      <span className="truncate">{session.title}</span>
-                    </div>
-
-                    <div
-                      data-menu-container
-                      className={`flex items-center gap-0.5 ${
-                        isActive || isMenuOpen
-                          ? "opacity-100"
-                          : "opacity-0 group-hover/recent-session:opacity-100"
-                      } transition-opacity`}
-                      onClick={(e) => e.stopPropagation()}
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
-                      {/* 1. 更多操作按钮 (...) */}
-                      <div className="relative" data-menu-container>
-                        <button
-                          type="button"
-                          data-menu-container
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveMenuId(isMenuOpen ? null : session.id);
-                          }}
-                          className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                          title="更多操作"
-                        >
-                          <MoreHorizontal className="w-3.5 h-3.5" />
-                        </button>
-
-                        {isMenuOpen && (
-                          <div
-                            data-menu-container
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => e.stopPropagation()}
-                            className="absolute right-0 top-7 z-50 w-36 py-1 bg-[#1E1E20] border border-hairline rounded-lg shadow-xl text-xs space-y-0.5 animate-in fade-in zoom-in-95"
-                          >
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditingSessionModalTarget(session);
-                                setActiveMenuId(null);
-                              }}
-                              className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
-                            >
-                              <Edit3 className="w-3.5 h-3.5 text-[#8E8E93]" />
-                              <span>修改对话信息</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                togglePinSession(session.id);
-                                setActiveMenuId(null);
-                              }}
-                              className="w-full px-2.5 py-1.5 flex items-center gap-2 text-[#ECECED] hover:bg-white/[0.06] text-left cursor-pointer"
-                            >
-                              <Pin className="w-3.5 h-3.5 text-[#8E8E93]" />
-                              <span>
-                                {session.pinned ? "取消置顶" : "置顶会话"}
-                              </span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 2. 独立直接归档按钮 */}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const isExecuting =
-                            isStreaming && streamingSessionId === session.id;
-                          if (isExecuting) {
-                            openStopAndArchiveModal(session.id);
-                          } else {
-                            archiveSession(session.id);
-                            if (activeSessionId === session.id) {
-                              const remaining = sessions.filter(
-                                (s) => s.id !== session.id && !s.is_archived
-                              );
-                              router.push(remaining.length > 0 ? `/chat/${remaining[0].id}` : "/chat");
-                            }
-                            showArchiveToast("session", session.id, session.title);
-                          }
-                        }}
-                        className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
-                        title="直接归档对话"
-                      >
-                        <Archive className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
+              standaloneSessions.map((session) => (
+                <SidebarSessionItem
+                  key={session.id}
+                  session={session}
+                  isActive={activeSessionId === session.id}
+                  isMenuOpen={activeMenuId === session.id}
+                  isEditing={editingSessionId === session.id}
+                  editingTitle={editingSessionTitle}
+                  indent={false}
+                  onSelect={() => handleSelectSession(session, session.project_id)}
+                  onToggleMenu={() =>
+                    setActiveMenuId(activeMenuId === session.id ? null : session.id)
+                  }
+                  onOpenEditModal={() => {
+                    setEditingSessionModalTarget(session);
+                    setActiveMenuId(null);
+                  }}
+                  onTogglePin={() => {
+                    togglePinSession(session.id);
+                    setActiveMenuId(null);
+                  }}
+                  onArchive={() => handleArchiveSession(session)}
+                  onChangeEditingTitle={setEditingSessionTitle}
+                  onSaveTitle={() => handleSaveSessionTitle(session.id)}
+                  onCancelEditing={() => {
+                    setEditingSessionId(null);
+                    setEditingSessionTitle("");
+                  }}
+                />
+              ))
             )}
           </div>
         )}

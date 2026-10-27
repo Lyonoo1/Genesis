@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: genesis-api
+    restart: always
+    env_file:
+      - ./api/.env
+    environment:
+      - ENVIRONMENT=production
+      - PORT=8000
+      - SQLITE_DB_PATH=/data/genesis.db
+      - SANDBOX_TMP_DIR=/tmp/genesis/sandboxes
+    volumes:
+      - genesis-data:/data
+      - genesis-sandboxes:/tmp/genesis/sandboxes
+    expose:
+      - "8000"
+    networks:
+      - genesis-network
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_BASE_URL=
+    container_name: genesis-web
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - NEXT_PUBLIC_API_BASE_URL=
+    depends_on:
+      - api
+    expose:
+      - "3000"
+    networks:
+      - genesis-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: genesis-nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+      - web
+    networks:
+      - genesis-network
+
+volumes:
+  genesis-data:
+    name: genesis-data
+  genesis-sandboxes:
+    name: genesis-sandboxes
+
+networks:
+  genesis-network:
+    name: genesis-network

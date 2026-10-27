@@ -12,8 +12,12 @@
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/newsreader": "^5.3.0",
     "@fontsource/plus-jakarta-sans": "^5.3.0",
+    "@monaco-editor/react": "^4.7.0",
     "@supabase/supabase-js": "^2.116.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.1",
+    "diff": "^9.0.0",
     "jose": "^6.2.12",
     "lucide-react": "^1.45.0",
     "next": "14.2.35",
@@ -26,11 +30,13 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@types/diff": "^8.0.0",
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
+    "monaco-editor": "^0.57.0",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"

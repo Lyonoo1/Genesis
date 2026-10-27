@@ -10,110 +10,16 @@ export interface PreviewFile {
   updatedAt: string;
 }
 
-const DEFAULT_PREVIEW_FILES: PreviewFile[] = [
-  {
-    id: "file-main-py",
-    name: "main.py",
-    path: "Genesis/api/main.py",
-    language: "python",
-    size: "3.2 KB",
-    updatedAt: "2026-09-20 11:20:00",
-    content: `from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from routers import sessions, chat, skills, marketplace
-
-app = FastAPI(
-    title="Genesis Agentic API",
-    description="Codex-grade Autonomous Engineering Assistant",
-    version="1.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.include_router(sessions.router, prefix="/api")
-app.include_router(chat.router, prefix="/api")
-app.include_router(skills.router, prefix="/api")
-app.include_router(marketplace.router, prefix="/api")
-
-@app.get("/healthz")
-async def health_check():
-    return {"status": "ok", "engine": "Genesis Core v1"}
-`,
-  },
-  {
-    id: "file-projects-sql",
-    name: "003_create_projects_table.sql",
-    path: "Genesis/supabase/migrations/20260920000002_create_projects_table.sql",
-    language: "sql",
-    size: "1.4 KB",
-    updatedAt: "2026-09-20 11:15:00",
-    content: `-- Genesis Projects Schema Migration
-create table if not exists public.projects (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users(id) on delete cascade,
-  name text not null,
-  icon text,
-  is_expanded boolean not null default true,
-  is_archived boolean not null default false,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
--- RLS Security Policies
-alter table public.projects enable row level security;
-
-create policy "Users manage own projects"
-  on public.projects
-  for all
-  using (auth.uid() = user_id or auth.uid() is null)
-  with check (auth.uid() = user_id or auth.uid() is null);
-`,
-  },
-  {
-    id: "file-session-store",
-    name: "useSessionStore.ts",
-    path: "Genesis/web/stores/useSessionStore.ts",
-    language: "typescript",
-    size: "8.6 KB",
-    updatedAt: "2026-09-20 11:24:00",
-    content: `import { create } from "zustand";
-import { Session, Project } from "@/types";
-import { supabase } from "@/lib/supabase/client";
-
-interface SessionState {
-  projects: Project[];
-  activeProjectId: string | null;
-  sessions: Session[];
-  activeSessionId: string | null;
-  addProject: (name: string) => Project;
-  updateProjectName: (id: string, name: string) => void;
-  archiveProject: (id: string) => void;
-  archiveSession: (id: string) => Promise<void>;
-}
-
-export const useSessionStore = create<SessionState>((set, get) => ({
-  projects: [],
-  activeProjectId: null,
-  sessions: [],
-  activeSessionId: null,
-  // ...
-}));
-`,
-  },
-];
+const DEFAULT_PREVIEW_FILES: PreviewFile[] = [];
 
 interface UIState {
   isLeftSidebarOpen: boolean;
   isLeftSidebarHovered: boolean;
   isRightSidebarOpen: boolean;
-  activeInspectorTab: "preview" | "info";
-  selectedFileId: string;
+  isTerminalOpen: boolean;
+  terminalHeight: number;
+  activeInspectorTab: "preview" | "files";
+  selectedFileId: string | null;
   previewFiles: PreviewFile[];
 
   toggleLeftSidebar: () => void;
@@ -122,21 +28,37 @@ interface UIState {
   setLeftSidebarHovered: (hovered: boolean) => void;
 
   toggleRightSidebar: () => void;
-  openRightSidebar: (tab?: "preview" | "info", fileId?: string) => void;
+  openRightSidebar: (tab?: "preview" | "files", fileId?: string) => void;
   closeRightSidebar: () => void;
-  setActiveInspectorTab: (tab: "preview" | "info") => void;
-  setSelectedFileId: (fileId: string) => void;
+  setActiveInspectorTab: (tab: "preview" | "files") => void;
+  setSelectedFileId: (fileId: string | null) => void;
   setPreviewFiles: (files: PreviewFile[]) => void;
   addPreviewFile: (file: PreviewFile) => void;
+
+  toggleTerminal: () => void;
+  openTerminal: () => void;
+  closeTerminal: () => void;
+  setTerminalHeight: (height: number) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
   isLeftSidebarOpen: true,
   isLeftSidebarHovered: false,
-  isRightSidebarOpen: false,
+  isRightSidebarOpen: true,
+  isTerminalOpen: false,
+  terminalHeight: 320,
   activeInspectorTab: "preview",
-  selectedFileId: DEFAULT_PREVIEW_FILES[0].id,
+  selectedFileId: null,
   previewFiles: DEFAULT_PREVIEW_FILES,
+
+  toggleTerminal: () =>
+    set((state) => ({ isTerminalOpen: !state.isTerminalOpen })),
+
+  openTerminal: () => set({ isTerminalOpen: true }),
+
+  closeTerminal: () => set({ isTerminalOpen: false }),
+
+  setTerminalHeight: (terminalHeight) => set({ terminalHeight }),
 
   toggleLeftSidebar: () =>
     set((state) => ({

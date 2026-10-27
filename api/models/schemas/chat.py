@@ -14,8 +14,19 @@ class SSEEventName(str, Enum):
     TOOL_CALL_RESULT = "tool_call_result"
     STEP_FINISH = "step_finish"
     SESSION_TITLE_UPDATED = "session_title_updated"
+    WORKBENCH_PREVIEW = "workbench_preview"
+    WORKBENCH_FILE_CHANGE = "workbench_file_change"
+    WORKBENCH_TODOS = "workbench_todos"
+    SUBAGENT_PROGRESS = "subagent_progress"
+    MID_TASK_STEERED = "mid_task_steered"
     DONE = "done"
     ERROR = "error"
+
+
+class SteeringRequest(BaseModel):
+    """运行中实时插话入参"""
+
+    content: str = Field(..., min_length=1, description="用户插话指令内容")
 
 
 class ChatRequest(BaseModel):
@@ -49,6 +60,9 @@ class ChatRequest(BaseModel):
     )
     provider: Optional[str] = Field(
         default=None, description="自定义模型提供商协议 (openai | anthropic)"
+    )
+    workspace_path: Optional[str] = Field(
+        default=None, description="当前项目工作区根目录绝对路径 (可选，若为空则由系统自动探测项目目录)"
     )
 
 

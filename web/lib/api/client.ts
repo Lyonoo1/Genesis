@@ -1,5 +1,16 @@
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+export function getApiBaseUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (envUrl !== undefined && envUrl !== "") {
+    return envUrl.replace(/\/+$/, "");
+  }
+  if (typeof window !== "undefined") {
+    // 浏览器运行环境：未显式指定 API 地址时走同源相对路径（由 Nginx 统一反代 /api）
+    return "";
+  }
+  return "http://localhost:8000";
+}
+
+const API_BASE_URL = getApiBaseUrl();
 
 export function getAuthToken(): string {
   if (typeof window === "undefined") return "";

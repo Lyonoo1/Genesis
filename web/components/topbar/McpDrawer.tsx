@@ -74,7 +74,7 @@ export function McpDrawer() {
       onClick={closeMcpDrawer}
     >
       <div
-        className="w-full max-w-md bg-[#18181C] border-l border-hairline h-full shadow-2xl flex flex-col animate-in slide-in-from-right duration-[600ms]"
+        className="w-full max-w-md bg-[#18181C] border-l border-hairline h-full shadow-2xl flex flex-col animate-in slide-in-from-right duration-500"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 抽屉头部 */}

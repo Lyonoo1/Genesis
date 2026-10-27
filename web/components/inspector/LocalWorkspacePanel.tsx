@@ -16,9 +16,13 @@ import {
   Check,
   Laptop,
   AlertTriangle,
+  AppWindow,
+  Loader2,
 } from "lucide-react";
 import { useLocalWorkspace } from "@/hooks/useLocalWorkspace";
 import { WorkspaceFileNode } from "@/lib/workspace/localWorkspaceManager";
+import { useCanvasStore } from "@/stores/useCanvasStore";
+import { useUIStore } from "@/stores/useUIStore";
 
 interface LocalWorkspacePanelProps {
   projectId: string | null;
@@ -53,6 +57,16 @@ export function LocalWorkspacePanel({
     setCopied(true);
     setTimeout(() => setCopied(false), 1600);
   };
+
+  // 0. 状态：初始化检查中
+  if (status === "LOADING") {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-6 text-center select-none bg-[#161618]">
+        <Loader2 className="w-6 h-6 text-[#8E8E93] animate-spin mb-2.5" />
+        <span className="text-xs text-[#8E8E93]">正在载入工作区状态...</span>
+      </div>
+    );
+  }
 
   // 1. 状态：换了电脑访问（当前设备未找到句柄）
   if (status === "DISCONNECTED_DEVICE") {
@@ -226,23 +240,44 @@ export function LocalWorkspacePanel({
             </div>
 
             {activeFileContent && (
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="flex items-center gap-1 px-2 py-0.5 rounded hover:text-white hover:bg-white/[0.08] transition-colors shrink-0 text-xs"
-              >
-                {copied ? (
-                  <>
-                    <Check className="w-3 h-3 text-accent-green" />
-                    <span className="text-accent-green">已复制</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-3 h-3" />
-                    <span>复制</span>
-                  </>
-                )}
-              </button>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    useUIStore.getState().closeRightSidebar();
+                    useCanvasStore.getState().openArtifact({
+                      title: activeFilePath.split("/").pop() || "file",
+                      filePath: activeFilePath,
+                      language: activeFilePath.split(".").pop() || "plaintext",
+                      content: activeFileContent,
+                      description: `从本地磁盘载入: ${activeFilePath}`,
+                    });
+                  }}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded hover:text-white hover:bg-white/[0.08] transition-colors text-xs text-[#8E8E93]"
+                  title="在 Canvas 画布中打开 (交互编辑、版本快照、Diff 与写回磁盘)"
+                >
+                  <AppWindow className="w-3.5 h-3.5 text-blue-400" />
+                  <span>在画布中打开</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded hover:text-white hover:bg-white/[0.08] transition-colors shrink-0 text-xs"
+                  title="复制代码"
+                >
+                  {copied ? (
+                    <>
+                      <Check className="w-3 h-3 text-accent-green" />
+                      <span className="text-accent-green">已复制</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3 h-3" />
+                      <span>复制</span>
+                    </>
+                  )}
+                </button>
+              </div>
             )}
           </div>
 

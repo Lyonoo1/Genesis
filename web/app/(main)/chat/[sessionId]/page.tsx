@@ -10,11 +10,13 @@ export default function SessionChatPage({
 }: {
   params: { sessionId: string };
 }) {
-  const { setActiveSessionId } = useSessionStore();
-  const { switchSession } = useChatStore();
+  const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
+  const switchSession = useChatStore((s) => s.switchSession);
+  const lastSwitchedIdRef = React.useRef<string | null>(null);
 
   useEffect(() => {
-    if (params.sessionId) {
+    if (params.sessionId && lastSwitchedIdRef.current !== params.sessionId) {
+      lastSwitchedIdRef.current = params.sessionId;
       setActiveSessionId(params.sessionId);
       switchSession(params.sessionId);
     }
