@@ -16,7 +16,7 @@ import {
   CheckCircle2,
   AlertCircle,
 } from "lucide-react";
-import { getAuthToken } from "@/lib/api/client";
+import { getAuthToken, getBasePath } from "@/lib/api/client";
 import { fetchBridgeStatusApi, BridgeMetadata } from "@/lib/api/bridge";
 
 export function BridgeTab() {
@@ -37,7 +37,8 @@ export function BridgeTab() {
     setToken(currentToken);
 
     if (typeof window !== "undefined") {
-      setServerUrl(window.location.origin);
+      const full = `${window.location.origin}${getBasePath()}`.replace(/\/+$/, "");
+      setServerUrl(full);
     }
   }, []);
 

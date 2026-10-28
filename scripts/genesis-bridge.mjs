@@ -44,7 +44,7 @@ function saveToken(token) {
 function parseArgs() {
   const args = process.argv.slice(2);
   const options = {
-    server: process.env.GENESIS_SERVER || "http://124.221.147.57",
+    server: process.env.GENESIS_SERVER || "http://124.221.147.57/genesis",
     token: process.env.GENESIS_TOKEN || getSavedToken() || "",
     dir: process.env.GENESIS_DIR || process.cwd(),
   };
@@ -447,7 +447,9 @@ const RPC_HANDLERS = {
 function getWsUrl(serverUrl, token) {
   let url = serverUrl.replace(/^http(s)?:\/\//, (m) => (m.startsWith("https") ? "wss://" : "ws://"));
   url = url.replace(/\/+$/, "");
-  return `${url}/api/bridge/ws?token=${encodeURIComponent(token)}`;
+  const needsGenesis = (url.includes("124.221.147.57") || url.includes("petpalapp.cn")) && !url.includes("/genesis");
+  const prefix = needsGenesis ? "/genesis" : "";
+  return `${url}${prefix}/api/bridge/ws?token=${encodeURIComponent(token)}`;
 }
 
 // ── 建立反向长连接隧道 ──
