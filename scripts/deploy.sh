@@ -108,26 +108,28 @@ else
 fi
 
 # 3.1 端口检测：检查宿主机是否已有原生 Nginx 占用 80 端口
-TARGET_PORT="${GENESIS_PORT:-80}"
-if [ -z "$GENESIS_PORT" ]; then
-    if ss -lntp 2>/dev/null | grep -q ':80 ' || netstat -lntp 2>/dev/null | grep -q ':80 '; then
-        log_warn "检测到宿主机 80 端口已有服务（如系统原生 Nginx）在监听！"
-        log_info "为防端口冲突，Genesis 自动映射至端口 8888 (支持由宿主机 Nginx 转发并复用 SSL 证书)"
-        TARGET_PORT=8888
-        export GENESIS_PORT=8888
+TARGET_PORT="${GENESIS_PORT:-8888}"
+if ss -lntp 2>/dev/null | grep -q ':80 ' || netstat -lntp 2>/dev/null | grep -q ':80 '; then
+    log_warn "检测到宿主机 80 端口已有服务（如系统原生 Nginx）在监听！"
+    log_info "为防端口冲突，Genesis 自动映射至端口 8888 (支持由宿主机 Nginx 转发并复用 SSL 证书)"
+    TARGET_PORT=8888
+    export GENESIS_PORT=8888
+    echo "GENESIS_PORT=8888" > "${ROOT_DIR}/.env"
 
-        # 自动安全挂载宿主机 Nginx 路由 (免去手动运行 setup_host_nginx.sh)
-        if [ -f "${ROOT_DIR}/scripts/setup_host_nginx.sh" ]; then
-            log_info "正在自动执行宿主机 Nginx 备份与 /genesis 路由挂载..."
-            bash "${ROOT_DIR}/scripts/setup_host_nginx.sh" || true
-        fi
+    # 自动安全挂载宿主机 Nginx 路由 (免去手动运行 setup_host_nginx.sh)
+    if [ -f "${ROOT_DIR}/scripts/setup_host_nginx.sh" ]; then
+        log_info "正在自动执行宿主机 Nginx 备份与 /genesis 路由挂载..."
+        bash "${ROOT_DIR}/scripts/setup_host_nginx.sh" || true
     fi
+else
+    export GENESIS_PORT="${TARGET_PORT}"
+    echo "GENESIS_PORT=${TARGET_PORT}" > "${ROOT_DIR}/.env"
 fi
 
 # 4. 执行全量容器构建与无缝拉起
 DOCKER_COMPOSE="docker compose"
 if ! docker ps >/dev/null 2>&1; then
-    DOCKER_COMPOSE="$SUDO docker compose"
+    DOCKER_COMPOSE="$SUDO -E docker compose"
 fi
 
 log_info "开始构建生产镜像并启动编排容器 (监听端口: ${TARGET_PORT})..."
