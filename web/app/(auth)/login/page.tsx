@@ -35,6 +35,9 @@ function formatAuthError(err: unknown, isSignUp: boolean): string {
   if (raw.includes("network") || raw.includes("fetch")) {
     return "网络连接异常，请检查网络后重试";
   }
+  if (raw.includes("timeout") || raw.includes("aborted") || raw.includes("timed out")) {
+    return "请求超时：后端服务未在规定时间内响应，请检查服务器容器状态";
+  }
   return isSignUp ? "注册处理失败，请稍后重试" : "账号或密码错误";
 }
 
@@ -188,16 +191,23 @@ function LoginForm() {
 
     setLoading(true);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort(new Error("请求超时，后端服务未响应"));
+    }, 10000);
+
     try {
       const endpoint = isSignUp ? "/api/auth/register" : "/api/auth/login";
       const res = await fetch(`${getApiBaseUrl()}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           account: cleanAccount,
           password,
         }),
       });
+      clearTimeout(timeoutId);
 
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
