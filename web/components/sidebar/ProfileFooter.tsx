@@ -17,6 +17,7 @@ import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { supabase } from "@/lib/supabase/client";
+import { getApiBaseUrl, getAuthToken } from "@/lib/api/client";
 
 export function ProfileFooter() {
   const router = useRouter();
@@ -30,20 +31,38 @@ export function ProfileFooter() {
   const [isOpen, setIsOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  // 初始化拉取当前登录用户
+  // 初始化拉取当前登录用户 (优先通过 /api/auth/me 获取)
   useEffect(() => {
-    supabase.auth
-      .getUser()
-      .then(({ data: { user } }) => {
-        if (user?.email) {
-          updateProfileSettings({
-            email: user.email,
-            name: user.user_metadata?.name || user.email.split("@")[0],
-            avatarText: (user.user_metadata?.name || user.email.slice(0, 2)).toUpperCase(),
-          });
-        }
+    const token = getAuthToken();
+    if (token) {
+      fetch(`${getApiBaseUrl()}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
       })
-      .catch(() => {});
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.email) {
+            updateProfileSettings({
+              email: data.email,
+              name: data.name || data.email.split("@")[0],
+              avatarText: (data.name || data.email.slice(0, 2)).toUpperCase(),
+            });
+          }
+        })
+        .catch(() => {});
+    } else {
+      supabase.auth
+        .getUser()
+        .then(({ data: { user } }) => {
+          if (user?.email) {
+            updateProfileSettings({
+              email: user.email,
+              name: user.user_metadata?.name || user.email.split("@")[0],
+              avatarText: (user.user_metadata?.name || user.email.slice(0, 2)).toUpperCase(),
+            });
+          }
+        })
+        .catch(() => {});
+    }
   }, [updateProfileSettings]);
 
   const handleLogout = async () => {

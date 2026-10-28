@@ -122,6 +122,98 @@ def init_sqlite_db() -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_model_configs_user ON model_configs(user_id, updated_at DESC);"
         )
+
+        # 5. 用户认证表 (Users) - 单机独立认证体系
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+
+        # 6. 已安装技能表 (Installed Skills)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS installed_skills (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                storage_path TEXT,
+                manifest TEXT,
+                auto_trigger INTEGER NOT NULL DEFAULT 1,
+                installed_at TEXT NOT NULL
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_installed_skills_user ON installed_skills(user_id, installed_at DESC);"
+        )
+
+        # 7. MCP 连接节点表 (MCP Connections)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mcp_connections (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                connection_type TEXT NOT NULL,
+                config TEXT,
+                status TEXT NOT NULL DEFAULT 'disconnected',
+                tools TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mcp_connections_user ON mcp_connections(user_id, created_at ASC);"
+        )
+
+        # 8. 自研插件草稿表 (My Plugins)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS my_plugins (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                manifest TEXT,
+                storage_path TEXT,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_my_plugins_user ON my_plugins(user_id, created_at DESC);"
+        )
+
+        # 9. 用量成本统计表 (Usage Logs)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS usage_logs (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                session_id TEXT,
+                skill_id TEXT,
+                model TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0.0,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_logs_user ON usage_logs(user_id, created_at DESC);"
+        )
+
         conn.commit()
 
 
@@ -571,3 +663,481 @@ def db_delete_model(user_id: str, model_id: str) -> bool:
         )
         conn.commit()
         return cursor.rowcount > 0
+
+
+# ==============================================================================
+# 5. Users SQLite CRUD (单机认证)
+# ==============================================================================
+def db_get_user_by_account(account: str) -> Optional[dict[str, Any]]:
+    clean = account.strip().lower()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM users WHERE lower(username) = ? OR lower(email) = ? LIMIT 1",
+            (clean, clean),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+
+def db_create_user(user_id: str, username: str, email: Optional[str], password_hash: str) -> dict[str, Any]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        cursor.execute(
+            """
+            INSERT INTO users (id, username, email, password_hash, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                email = coalesce(excluded.email, users.email)
+            """,
+            (str(user_id), username, email, password_hash, now),
+        )
+        conn.commit()
+    return db_get_user_by_account(username) or {}
+
+
+def db_count_users() -> int:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT count(*) FROM users")
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+
+# ==============================================================================
+# 6. Installed Skills SQLite CRUD
+# ==============================================================================
+def db_list_installed_skills(user_id: str) -> list[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM installed_skills WHERE user_id = ? ORDER BY installed_at DESC",
+            (str(user_id),),
+        )
+        rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            manifest_val = None
+            if r["manifest"]:
+                try:
+                    manifest_val = json.loads(r["manifest"])
+                except Exception:
+                    manifest_val = {}
+            result.append({
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "name": r["name"],
+                "version": r["version"],
+                "storage_path": r["storage_path"],
+                "manifest": manifest_val,
+                "auto_trigger": bool(r["auto_trigger"]),
+                "installed_at": r["installed_at"],
+            })
+        return result
+
+
+def db_get_installed_skill_by_id(user_id: str, skill_id: str) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM installed_skills WHERE id = ? AND user_id = ?",
+            (str(skill_id), str(user_id)),
+        )
+        r = cursor.fetchone()
+        if not r:
+            return None
+        manifest_val = None
+        if r["manifest"]:
+            try:
+                manifest_val = json.loads(r["manifest"])
+            except Exception:
+                manifest_val = {}
+        return {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "version": r["version"],
+            "storage_path": r["storage_path"],
+            "manifest": manifest_val,
+            "auto_trigger": bool(r["auto_trigger"]),
+            "installed_at": r["installed_at"],
+        }
+
+
+def db_get_installed_skill_by_name(user_id: str, name: str) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM installed_skills WHERE name = ? AND user_id = ?",
+            (name, str(user_id)),
+        )
+        r = cursor.fetchone()
+        if not r:
+            return None
+        manifest_val = None
+        if r["manifest"]:
+            try:
+                manifest_val = json.loads(r["manifest"])
+            except Exception:
+                manifest_val = {}
+        return {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "version": r["version"],
+            "storage_path": r["storage_path"],
+            "manifest": manifest_val,
+            "auto_trigger": bool(r["auto_trigger"]),
+            "installed_at": r["installed_at"],
+        }
+
+
+def db_insert_installed_skill(data: dict[str, Any]) -> dict[str, Any]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        manifest_str = json.dumps(data.get("manifest", {}), ensure_ascii=False)
+        sid = str(data.get("id") or data.get("name"))
+        now = datetime.now(timezone.utc).isoformat()
+        cursor.execute(
+            """
+            INSERT INTO installed_skills (id, user_id, name, version, storage_path, manifest, auto_trigger, installed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                version = excluded.version,
+                storage_path = excluded.storage_path,
+                manifest = excluded.manifest,
+                auto_trigger = excluded.auto_trigger
+            """,
+            (
+                sid,
+                str(data["user_id"]),
+                data["name"],
+                data.get("version", "1.0.0"),
+                data.get("storage_path"),
+                manifest_str,
+                1 if data.get("auto_trigger", True) else 0,
+                data.get("installed_at") or now,
+            ),
+        )
+        conn.commit()
+    return db_get_installed_skill_by_name(data["user_id"], data["name"]) or data
+
+
+def db_update_installed_skill_auto_trigger(user_id: str, skill_id: str, auto_trigger: bool) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE installed_skills SET auto_trigger = ? WHERE id = ? AND user_id = ?",
+            (1 if auto_trigger else 0, str(skill_id), str(user_id)),
+        )
+        conn.commit()
+    return db_get_installed_skill_by_id(user_id, skill_id)
+
+
+def db_delete_installed_skill(user_id: str, skill_id: str) -> bool:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM installed_skills WHERE id = ? AND user_id = ?",
+            (str(skill_id), str(user_id)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+# ==============================================================================
+# 7. MCP Connections SQLite CRUD
+# ==============================================================================
+def db_list_mcp_connections(user_id: str) -> list[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM mcp_connections WHERE user_id = ? ORDER BY created_at ASC",
+            (str(user_id),),
+        )
+        rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            cfg = json.loads(r["config"]) if r["config"] else {}
+            tools = json.loads(r["tools"]) if r["tools"] else []
+            result.append({
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "name": r["name"],
+                "connection_type": r["connection_type"],
+                "config": cfg,
+                "status": r["status"],
+                "tools": tools,
+                "error_message": r["error_message"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            })
+        return result
+
+
+def db_get_mcp_connection_by_id(user_id: str, server_id: str) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM mcp_connections WHERE id = ? AND user_id = ?",
+            (str(server_id), str(user_id)),
+        )
+        r = cursor.fetchone()
+        if not r:
+            return None
+        cfg = json.loads(r["config"]) if r["config"] else {}
+        tools = json.loads(r["tools"]) if r["tools"] else []
+        return {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "connection_type": r["connection_type"],
+            "config": cfg,
+            "status": r["status"],
+            "tools": tools,
+            "error_message": r["error_message"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+
+
+def db_get_mcp_connection_by_name(user_id: str, name: str) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM mcp_connections WHERE name = ? AND user_id = ?",
+            (name, str(user_id)),
+        )
+        r = cursor.fetchone()
+        if not r:
+            return None
+        cfg = json.loads(r["config"]) if r["config"] else {}
+        tools = json.loads(r["tools"]) if r["tools"] else []
+        return {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "connection_type": r["connection_type"],
+            "config": cfg,
+            "status": r["status"],
+            "tools": tools,
+            "error_message": r["error_message"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+
+
+def db_create_mcp_connection(data: dict[str, Any]) -> dict[str, Any]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        cfg_str = json.dumps(data.get("config", {}), ensure_ascii=False)
+        tools_str = json.dumps(data.get("tools", []), ensure_ascii=False)
+        sid = str(data["id"])
+        cursor.execute(
+            """
+            INSERT INTO mcp_connections (id, user_id, name, connection_type, config, status, tools, error_message, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sid,
+                str(data["user_id"]),
+                data["name"],
+                data["connection_type"],
+                cfg_str,
+                data.get("status", "disconnected"),
+                tools_str,
+                data.get("error_message"),
+                data.get("created_at") or now,
+                data.get("updated_at") or now,
+            ),
+        )
+        conn.commit()
+    return db_get_mcp_connection_by_id(data["user_id"], sid) or data
+
+
+def db_update_mcp_connection(user_id: str, server_id: str, data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        updates = ["updated_at = ?"]
+        params: list[Any] = [now]
+        if "name" in data:
+            updates.append("name = ?")
+            params.append(data["name"])
+        if "connection_type" in data:
+            updates.append("connection_type = ?")
+            params.append(data["connection_type"])
+        if "config" in data:
+            updates.append("config = ?")
+            params.append(json.dumps(data["config"], ensure_ascii=False))
+        if "status" in data:
+            updates.append("status = ?")
+            params.append(data["status"])
+        if "tools" in data:
+            updates.append("tools = ?")
+            params.append(json.dumps(data["tools"], ensure_ascii=False))
+        if "error_message" in data:
+            updates.append("error_message = ?")
+            params.append(data["error_message"])
+
+        params.extend([str(server_id), str(user_id)])
+        cursor.execute(
+            f"UPDATE mcp_connections SET {', '.join(updates)} WHERE id = ? AND user_id = ?",
+            params,
+        )
+        conn.commit()
+    return db_get_mcp_connection_by_id(user_id, server_id)
+
+
+def db_delete_mcp_connection(user_id: str, server_id: str) -> bool:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM mcp_connections WHERE id = ? AND user_id = ?",
+            (str(server_id), str(user_id)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+# ==============================================================================
+# 8. My Plugins SQLite CRUD
+# ==============================================================================
+def db_list_my_plugins(user_id: str) -> list[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM my_plugins WHERE user_id = ? ORDER BY created_at DESC",
+            (str(user_id),),
+        )
+        rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            man = json.loads(r["manifest"]) if r["manifest"] else {}
+            result.append({
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "name": r["name"],
+                "manifest": man,
+                "storage_path": r["storage_path"],
+                "status": r["status"],
+                "created_at": r["created_at"],
+            })
+        return result
+
+
+def db_get_my_plugin_by_id(user_id: str, plugin_id: str) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM my_plugins WHERE id = ? AND user_id = ?",
+            (str(plugin_id), str(user_id)),
+        )
+        r = cursor.fetchone()
+        if not r:
+            return None
+        man = json.loads(r["manifest"]) if r["manifest"] else {}
+        return {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "name": r["name"],
+            "manifest": man,
+            "storage_path": r["storage_path"],
+            "status": r["status"],
+            "created_at": r["created_at"],
+        }
+
+
+def db_create_my_plugin(data: dict[str, Any]) -> dict[str, Any]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        sid = str(data.get("id") or f"plugin-{datetime.now().timestamp()}")
+        man_str = json.dumps(data.get("manifest", {}), ensure_ascii=False)
+        cursor.execute(
+            """
+            INSERT INTO my_plugins (id, user_id, name, manifest, storage_path, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sid,
+                str(data["user_id"]),
+                data["name"],
+                man_str,
+                data.get("storage_path"),
+                data.get("status", "draft"),
+                data.get("created_at") or now,
+            ),
+        )
+        conn.commit()
+    return db_get_my_plugin_by_id(data["user_id"], sid) or data
+
+
+# ==============================================================================
+# 9. Usage Logs SQLite CRUD
+# ==============================================================================
+def db_insert_usage_log(data: dict[str, Any]) -> dict[str, Any]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        sid = str(data.get("id") or f"log-{datetime.now().timestamp()}")
+        cursor.execute(
+            """
+            INSERT INTO usage_logs (id, user_id, session_id, skill_id, model, input_tokens, output_tokens, cost_usd, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sid,
+                str(data["user_id"]),
+                str(data["session_id"]) if data.get("session_id") else None,
+                str(data["skill_id"]) if data.get("skill_id") else None,
+                data.get("model", "gpt-4o"),
+                int(data.get("input_tokens", 0)),
+                int(data.get("output_tokens", 0)),
+                float(data.get("cost_usd", 0.0)),
+                data.get("created_at") or now,
+            ),
+        )
+        conn.commit()
+    return data
+
+
+def db_get_usage_summary(user_id: str) -> dict[str, Any]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT 
+                coalesce(sum(input_tokens), 0) as total_in,
+                coalesce(sum(output_tokens), 0) as total_out,
+                coalesce(sum(cost_usd), 0.0) as total_cost,
+                count(*) as total_requests
+            FROM usage_logs WHERE user_id = ?
+            """,
+            (str(user_id),),
+        )
+        r = cursor.fetchone()
+        return {
+            "total_tokens": (r["total_in"] + r["total_out"]) if r else 0,
+            "input_tokens": r["total_in"] if r else 0,
+            "output_tokens": r["total_out"] if r else 0,
+            "total_cost_usd": round(r["total_cost"], 4) if r else 0.0,
+            "total_requests": r["total_requests"] if r else 0,
+        }
+
+
+def db_list_usage_logs(user_id: str, limit: int = 500) -> list[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM usage_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+            (str(user_id), limit),
+        )
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+

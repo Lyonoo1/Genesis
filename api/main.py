@@ -18,6 +18,7 @@ from routers.usage import router as usage_router
 from routers.models import router as models_router
 from routers.terminal import router as terminal_router
 from routers.preview import router as preview_router
+from routers.auth import router as auth_router
 from contextlib import asynccontextmanager
 from routers.bridge import router as bridge_router
 from routers.db_viewer import router as db_viewer_router
@@ -55,6 +56,7 @@ app.include_router(usage_router, prefix="/api")
 app.include_router(models_router, prefix="/api")
 app.include_router(terminal_router, prefix="/api")
 app.include_router(bridge_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
 app.include_router(preview_router, prefix="/api")
 app.include_router(preview_router)
 
@@ -137,15 +139,6 @@ async def health_check():
     }
 
 
-# 2. 认证探针测试端点 (用于 BE-Step 1 验收标准: 不带 Token 访问返回 401 统一结构)
-@app.get("/api/auth/me", tags=["Auth"])
-async def get_current_user_profile(
-    user: AuthenticatedUser = Depends(get_current_user),
-):
-    return {
-        "id": user.id,
-        "email": user.email,
-    }
 
 
 

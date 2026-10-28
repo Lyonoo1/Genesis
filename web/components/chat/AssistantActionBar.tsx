@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { Copy, Check, RotateCw, ThumbsUp, ThumbsDown } from "lucide-react";
+import { copyToClipboard } from "@/lib/clipboard";
 
 interface AssistantActionBarProps {
   content: string;
@@ -43,12 +44,10 @@ export function AssistantActionBar({
   const [feedback, setFeedback] = useState<"like" | "dislike" | null>(null);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(content);
+    const success = await copyToClipboard(content);
+    if (success) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // fallback
     }
   };
 

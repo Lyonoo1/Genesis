@@ -4,11 +4,14 @@ ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy
 
-# 补充基础依赖与安装 uv (使用清华镜像源加速，避免国内服务器拉取 ghcr.io 镜像超时)
+# 补充基础依赖、Node.js 运行时与安装 uv (配置国内镜像源加速)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     procps \
+    nodejs \
+    npm \
+    && npm install -g pnpm --registry=https://registry.npmmirror.com \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple uv
 

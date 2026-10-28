@@ -4,14 +4,15 @@ const nextConfig = {
     ignoreDuringBuilds: true,
   },
   async rewrites() {
+    const internalApi = process.env.INTERNAL_API_URL || "http://localhost:8000";
     return [
       {
         source: "/db",
-        destination: "http://localhost:8000/db",
+        destination: `${internalApi}/db`,
       },
       {
         source: "/api/db/:path*",
-        destination: "http://localhost:8000/api/db/:path*",
+        destination: `${internalApi}/api/db/:path*`,
       },
     ];
   },

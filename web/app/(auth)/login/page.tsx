@@ -6,6 +6,7 @@ import { Eye, EyeOff, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { InteractiveGridBackground } from "@/components/auth/InteractiveGridBackground";
+import { getApiBaseUrl } from "@/lib/api/client";
 
 /**
  * 账号归一化：
@@ -203,124 +204,52 @@ function LoginForm() {
     setLoading(true);
 
     try {
-      if (isSignUp) {
-        // 1. 注册查重
-        const { data: existingProfile } = await supabase
-          .from("profiles")
-          .select("id")
-          .ilike("username", cleanAccount)
-          .maybeSingle();
-
-        if (existingProfile) {
-          setErrorMessage("该用户名已被注册，请直接登录");
-          setLoading(false);
-          return;
-        }
-
-        const email = resolveAccountToEmail(cleanAccount);
-
-        // 2. 调用注册
-        const { data: signUpData, error: signUpError } =
-          await supabase.auth.signUp({
-            email,
-            password,
-            options: {
-              data: {
-                name: cleanAccount,
-                username: cleanAccount,
-                account: cleanAccount,
-              },
-            },
-          });
-
-        if (signUpError) {
-          throw signUpError;
-        }
-
-        if (signUpData.user) {
-          await supabase.from("profiles").upsert({
-            id: signUpData.user.id,
-            username: cleanAccount,
-            email: cleanAccount.includes("@") ? cleanAccount : null,
-          });
-        }
-
-        // 注意：不调用 signOut()，否则会触发 onAuthStateChange SIGNED_OUT 事件，
-        // 导致其他已登录 tab 被强制踢出。只清理本 tab 的 token。
-        localStorage.removeItem("genesis_auth_token");
-        document.cookie =
-          "genesis_auth_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
-        // 清理 Supabase SDK 内部 session 存储（不触发 auth event）
-        const storageKey = `sb-${new URL(process.env.NEXT_PUBLIC_SUPABASE_URL || "http://127.0.0.1:54321").hostname.split(".")[0]}-auth-token`;
-        localStorage.removeItem(storageKey);
-
-        setIsSignUp(false);
-        setConfirmPassword("");
-        setSuccessMessage("注册成功！请输入密码登录");
-        setLoading(false);
-        return;
-      } else {
-        let targetEmail = cleanAccount;
-
-        if (!cleanAccount.includes("@")) {
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("email, username")
-            .ilike("username", cleanAccount)
-            .maybeSingle();
-
-          if (!profile) {
-            recordFailedAttempt();
-            setErrorMessage("账号或密码错误");
-            // 不在这里 setLoading(false)，让 finally 统一处理（含 timing 延迟）
-            return;
-          }
-
-          targetEmail = profile.email || resolveAccountToEmail(cleanAccount);
-        } else {
-          targetEmail = cleanAccount;
-        }
-
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: targetEmail,
+      const endpoint = isSignUp ? "/api/auth/register" : "/api/auth/login";
+      const res = await fetch(`${getApiBaseUrl()}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account: cleanAccount,
           password,
+        }),
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        const msg = errJson?.error?.message || errJson?.detail || (isSignUp ? "注册处理失败，请稍后重试" : "账号或密码错误");
+        throw new Error(msg);
+      }
+
+      const authData = await res.json();
+      if (authData.access_token) {
+        clearFailedAttempts();
+
+        // 1. 写入安全 Cookie (供 Edge Middleware 拦截校验，防 CSRF)
+        const isHttps =
+          typeof window !== "undefined" && window.location.protocol === "https:";
+        const maxAge = authData.expires_in || 2592000; // 默认 30 天
+        document.cookie = `genesis_auth_token=${encodeURIComponent(
+          authData.access_token
+        )}; path=/; max-age=${maxAge}; SameSite=Lax; ${isHttps ? "Secure;" : ""}`;
+
+        // 2. 写入 localStorage 供客户端组件使用
+        localStorage.setItem("genesis_auth_token", authData.access_token);
+
+        const displayName =
+          authData.user?.name ||
+          authData.user?.username ||
+          cleanAccount;
+
+        updateProfileSettings({
+          email: authData.user?.email || (cleanAccount.includes("@") ? cleanAccount : ""),
+          name: displayName,
+          avatarText: displayName.slice(0, 2).toUpperCase(),
         });
 
-        if (error) {
-          recordFailedAttempt();
-          throw error;
-        }
-
-        if (data.session) {
-          clearFailedAttempts();
-
-          // 1. 写入安全 Cookie (供 Edge Middleware 拦截校验，防 CSRF)
-          const isHttps =
-            typeof window !== "undefined" && window.location.protocol === "https:";
-          const maxAge = data.session.expires_in || 604800; // 默认 7 天
-          document.cookie = `genesis_auth_token=${encodeURIComponent(
-            data.session.access_token
-          )}; path=/; max-age=${maxAge}; SameSite=Lax; ${isHttps ? "Secure;" : ""}`;
-
-          // 2. 写入 localStorage 供客户端组件使用
-          localStorage.setItem("genesis_auth_token", data.session.access_token);
-
-          const displayName =
-            data.user.user_metadata?.name ||
-            data.user.user_metadata?.username ||
-            cleanAccount;
-
-          updateProfileSettings({
-            email: cleanAccount.includes("@") ? cleanAccount : "",
-            name: displayName,
-            avatarText: displayName.slice(0, 2).toUpperCase(),
-          });
-
-          // 3. 读取目标重定向 URL (支持被拦截页面原路返回)
-          const redirectTarget = searchParams.get("redirect") || "/";
-          window.location.href = redirectTarget;
-          return;
-        }
+        // 3. 读取目标重定向 URL (支持被拦截页面原路返回)
+        const redirectTarget = searchParams.get("redirect") || "/";
+        window.location.href = redirectTarget;
+        return;
       }
     } catch (err: unknown) {
       recordFailedAttempt();

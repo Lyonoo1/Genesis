@@ -31,11 +31,13 @@ class UsageRepository:
     async def create(
         self, user_id: str, usage_in: UsageLogCreate, cost_usd: float
     ) -> dict[str, Any]:
-        """向 usage_logs 插入一条用量记录"""
+        """向 usage_logs 插入一条用量记录 (优先 SQLite 持久化)"""
+        from core.sqlite_db import db_insert_usage_log
+        import uuid
         payload = {
-            "id": f"log-{len(_MEMORY_USAGE_LOGS) + 1}",
+            "id": f"log-{uuid.uuid4()}",
             "user_id": str(user_id),
-            "session_id": str(usage_in.session_id),
+            "session_id": str(usage_in.session_id) if usage_in.session_id else None,
             "skill_id": str(usage_in.skill_id) if usage_in.skill_id else None,
             "model": usage_in.model,
             "input_tokens": usage_in.input_tokens,
@@ -44,37 +46,39 @@ class UsageRepository:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        if "placeholder" in settings.SUPABASE_URL:
-            _MEMORY_USAGE_LOGS.append(payload)
-            return payload
+        db_insert_usage_log(payload)
 
-        try:
-            res = self.client.table("usage_logs").insert(payload).execute()
-            if res.data:
-                return res.data[0]
-        except Exception:
-            pass
+        if "placeholder" not in settings.SUPABASE_URL and self.client:
+            try:
+                self.client.table("usage_logs").insert(payload).execute()
+            except Exception:
+                pass
 
-        _MEMORY_USAGE_LOGS.append(payload)
         return payload
 
     async def list_by_user(self, user_id: str, limit: int = 500) -> list[dict[str, Any]]:
         """拉取指定用户近期的用量明细记录"""
-        if "placeholder" in settings.SUPABASE_URL:
-            return list(reversed(_MEMORY_USAGE_LOGS[-limit:]))
+        from core.sqlite_db import db_list_usage_logs
+        logs = db_list_usage_logs(str(user_id), limit)
+        if logs:
+            return logs
 
-        try:
-            res = (
-                self.client.table("usage_logs")
-                .select("*")
-                .eq("user_id", str(user_id))
-                .order("created_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-            return res.data or []
-        except Exception:
-            return list(reversed(_MEMORY_USAGE_LOGS[-limit:]))
+        if "placeholder" not in settings.SUPABASE_URL and self.client:
+            try:
+                res = (
+                    self.client.table("usage_logs")
+                    .select("*")
+                    .eq("user_id", str(user_id))
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                )
+                if res.data:
+                    return res.data
+            except Exception:
+                pass
+
+        return []
 
 
     async def get_summary(self, user_id: str, range_type: str = "month") -> UsageSummaryResponse:

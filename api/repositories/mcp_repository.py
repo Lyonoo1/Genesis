@@ -1,83 +1,107 @@
 from typing import Any, Optional
 from uuid import UUID
-from supabase import Client
+import uuid
 
 from core.config import settings
-from core.database import get_supabase_client
 from core.exceptions import AppException, ErrorCode
 from models.schemas.mcp import McpServerCreate, McpServerUpdate
+from core.sqlite_db import (
+    db_list_mcp_connections,
+    db_get_mcp_connection_by_id,
+    db_get_mcp_connection_by_name,
+    db_create_mcp_connection,
+    db_update_mcp_connection,
+    db_delete_mcp_connection,
+)
 
 
 class McpRepository:
-    """MCP 连接池数据访问仓储"""
+    """MCP 连接池数据访问仓储 (优先 SQLite 单机物理持久化，可选 Supabase 云端同步)"""
 
-    def __init__(self, client: Optional[Client] = None):
+    def __init__(self, client: Optional[Any] = None):
         self._client = client
 
     @property
-    def client(self) -> Client:
-        if self._client is None:
-            self._client = get_supabase_client()
+    def client(self):
+        if self._client is None and "placeholder" not in settings.SUPABASE_URL:
+            try:
+                from core.database import get_supabase_client
+                self._client = get_supabase_client()
+            except Exception:
+                self._client = None
         return self._client
 
     async def list_by_user(self, user_id: str) -> list[dict[str, Any]]:
         """获取用户已配置的全部 MCP Server 连接节点"""
-        if "placeholder" in settings.SUPABASE_URL:
-            return []
-        try:
-            res = (
-                self.client.table("mcp_connections")
-                .select("*")
-                .eq("user_id", str(user_id))
-                .order("created_at", desc=False)
-                .execute()
-            )
-            return res.data or []
-        except Exception:
-            return []
+        nodes = db_list_mcp_connections(str(user_id))
+        if nodes:
+            return nodes
+
+        if self.client:
+            try:
+                res = (
+                    self.client.table("mcp_connections")
+                    .select("*")
+                    .eq("user_id", str(user_id))
+                    .order("created_at", desc=False)
+                    .execute()
+                )
+                if res.data:
+                    for n in res.data:
+                        db_create_mcp_connection(n)
+                    return res.data
+            except Exception:
+                pass
+        return nodes
 
     async def get_by_id(self, user_id: str, server_id: UUID) -> Optional[dict[str, Any]]:
         """根据 ID 查询用户所属的 MCP Server"""
-        if "placeholder" in settings.SUPABASE_URL:
-            return None
-        try:
-            res = (
-                self.client.table("mcp_connections")
-                .select("*")
-                .eq("id", str(server_id))
-                .eq("user_id", str(user_id))
-                .execute()
-            )
-            if not res.data:
-                return None
-            return res.data[0]
-        except Exception:
-            return None
+        node = db_get_mcp_connection_by_id(str(user_id), str(server_id))
+        if node:
+            return node
+
+        if self.client:
+            try:
+                res = (
+                    self.client.table("mcp_connections")
+                    .select("*")
+                    .eq("id", str(server_id))
+                    .eq("user_id", str(user_id))
+                    .execute()
+                )
+                if res.data:
+                    db_create_mcp_connection(res.data[0])
+                    return res.data[0]
+            except Exception:
+                pass
+        return None
 
     async def get_by_name(self, user_id: str, name: str) -> Optional[dict[str, Any]]:
         """根据名称查询节点"""
-        if "placeholder" in settings.SUPABASE_URL:
-            return None
-        try:
-            res = (
-                self.client.table("mcp_connections")
-                .select("*")
-                .eq("name", name)
-                .eq("user_id", str(user_id))
-                .execute()
-            )
-            if not res.data:
-                return None
-            return res.data[0]
-        except Exception:
-            return None
+        node = db_get_mcp_connection_by_name(str(user_id), name)
+        if node:
+            return node
 
+        if self.client:
+            try:
+                res = (
+                    self.client.table("mcp_connections")
+                    .select("*")
+                    .eq("name", name)
+                    .eq("user_id", str(user_id))
+                    .execute()
+                )
+                if res.data:
+                    db_create_mcp_connection(res.data[0])
+                    return res.data[0]
+            except Exception:
+                pass
+        return None
 
     async def create(
         self, user_id: str, server_in: McpServerCreate, tools: Optional[list[dict[str, Any]]] = None
     ) -> dict[str, Any]:
         """新建 MCP Server 连接记录"""
-        # 检查重名
         existing = await self.get_by_name(user_id, server_in.name)
         if existing:
             raise AppException(
@@ -94,22 +118,28 @@ class McpRepository:
         if server_in.env:
             config["env"] = server_in.env
 
+        sid = str(uuid.uuid4())
         payload = {
+            "id": sid,
             "user_id": str(user_id),
             "name": server_in.name,
             "connection_type": server_in.connection_type,
+            "config": config,
             "connection_config": config,
             "tools": tools or [],
+            "status": "connected" if tools else "disconnected",
             "enabled": server_in.enabled,
         }
 
-        res = self.client.table("mcp_connections").insert(payload).execute()
-        if not res.data:
-            raise AppException(
-                code=ErrorCode.INTERNAL_SERVER_ERROR,
-                message="创建 MCP 连接记录失败",
-            )
-        return res.data[0]
+        saved = db_create_mcp_connection(payload)
+
+        if self.client:
+            try:
+                self.client.table("mcp_connections").insert(payload).execute()
+            except Exception:
+                pass
+
+        return saved
 
     async def update(
         self, user_id: str, server_id: UUID, update_in: McpServerUpdate
@@ -124,7 +154,6 @@ class McpRepository:
 
         update_payload: dict[str, Any] = {}
         if update_in.name is not None and update_in.name != current["name"]:
-            # 查重
             existing = await self.get_by_name(user_id, update_in.name)
             if existing:
                 raise AppException(
@@ -134,6 +163,7 @@ class McpRepository:
             update_payload["name"] = update_in.name
 
         if update_in.connection_config is not None:
+            update_payload["config"] = update_in.connection_config
             update_payload["connection_config"] = update_in.connection_config
 
         if update_in.enabled is not None:
@@ -142,32 +172,40 @@ class McpRepository:
         if not update_payload:
             return current
 
-        res = (
-            self.client.table("mcp_connections")
-            .update(update_payload)
-            .eq("id", str(server_id))
-            .eq("user_id", str(user_id))
-            .execute()
-        )
-        return res.data[0]
+        updated = db_update_mcp_connection(str(user_id), str(server_id), update_payload)
+
+        if self.client:
+            try:
+                self.client.table("mcp_connections").update(update_payload).eq(
+                    "id", str(server_id)
+                ).eq("user_id", str(user_id)).execute()
+            except Exception:
+                pass
+
+        return updated or current
 
     async def update_tools(
         self, user_id: str, server_id: UUID, tools: list[dict[str, Any]]
     ) -> dict[str, Any]:
         """更新探测到的工具列表清单"""
-        res = (
-            self.client.table("mcp_connections")
-            .update({"tools": tools})
-            .eq("id", str(server_id))
-            .eq("user_id", str(user_id))
-            .execute()
+        updated = db_update_mcp_connection(
+            str(user_id), str(server_id), {"tools": tools, "status": "connected"}
         )
-        if not res.data:
+
+        if self.client:
+            try:
+                self.client.table("mcp_connections").update(
+                    {"tools": tools, "status": "connected"}
+                ).eq("id", str(server_id)).eq("user_id", str(user_id)).execute()
+            except Exception:
+                pass
+
+        if not updated:
             raise AppException(
                 code=ErrorCode.NOT_FOUND,
                 message="更新工具清单失败，节点不存在",
             )
-        return res.data[0]
+        return updated
 
     async def toggle_tool(
         self, user_id: str, server_id: UUID, tool_name: str, enabled: bool
@@ -205,7 +243,14 @@ class McpRepository:
                 message="指定的 MCP 节点不存在",
             )
 
-        self.client.table("mcp_connections").delete().eq("id", str(server_id)).eq(
-            "user_id", str(user_id)
-        ).execute()
+        db_delete_mcp_connection(str(user_id), str(server_id))
+
+        if self.client:
+            try:
+                self.client.table("mcp_connections").delete().eq(
+                    "id", str(server_id)
+                ).eq("user_id", str(user_id)).execute()
+            except Exception:
+                pass
+
         return True

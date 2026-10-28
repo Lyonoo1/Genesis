@@ -1,47 +1,29 @@
 from typing import Any, Optional
 from uuid import UUID
-from supabase import Client
 
-from core.database import get_supabase_client
 from core.exceptions import AppException, ErrorCode
 from models.schemas.marketplace import PluginUploadDraft
+from core.sqlite_db import (
+    db_list_my_plugins,
+    db_get_my_plugin_by_id,
+    db_create_my_plugin,
+    get_db_connection,
+)
 
 
 class PluginRepository:
-    """自研插件数据访问仓储 (my_plugins 表)"""
+    """自研插件数据访问仓储 (基于 SQLite 单机物理持久化)"""
 
-    def __init__(self, client: Optional[Client] = None):
+    def __init__(self, client: Optional[Any] = None):
         self._client = client
-
-    @property
-    def client(self) -> Client:
-        if self._client is None:
-            self._client = get_supabase_client()
-        return self._client
 
     async def list_by_user(self, user_id: str) -> list[dict[str, Any]]:
         """获取用户自研插件列表"""
-        res = (
-            self.client.table("my_plugins")
-            .select("*")
-            .eq("user_id", str(user_id))
-            .order("created_at", desc=True)
-            .execute()
-        )
-        return res.data or []
+        return db_list_my_plugins(str(user_id))
 
     async def get_by_id(self, user_id: str, plugin_id: UUID) -> Optional[dict[str, Any]]:
         """按 ID 查询插件草稿"""
-        res = (
-            self.client.table("my_plugins")
-            .select("*")
-            .eq("id", str(plugin_id))
-            .eq("user_id", str(user_id))
-            .execute()
-        )
-        if not res.data:
-            return None
-        return res.data[0]
+        return db_get_my_plugin_by_id(str(user_id), str(plugin_id))
 
     async def create_draft(
         self, user_id: str, draft_in: PluginUploadDraft
@@ -54,13 +36,7 @@ class PluginRepository:
             "storage_path": draft_in.storage_path,
             "status": "draft",
         }
-        res = self.client.table("my_plugins").insert(payload).execute()
-        if not res.data:
-            raise AppException(
-                code=ErrorCode.INTERNAL_SERVER_ERROR,
-                message="保存插件草稿失败",
-            )
-        return res.data[0]
+        return db_create_my_plugin(payload)
 
     async def delete(self, user_id: str, plugin_id: UUID) -> bool:
         """删除插件草稿"""
@@ -70,10 +46,14 @@ class PluginRepository:
                 code=ErrorCode.NOT_FOUND,
                 message="指定的插件草稿不存在",
             )
-        self.client.table("my_plugins").delete().eq("id", str(plugin_id)).eq(
-            "user_id", str(user_id)
-        ).execute()
-        return True
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM my_plugins WHERE id = ? AND user_id = ?",
+                (str(plugin_id), str(user_id)),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
 
 plugin_repository = PluginRepository()

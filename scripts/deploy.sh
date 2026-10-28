@@ -37,6 +37,22 @@ if [ "$EUID" -ne 0 ]; then
     fi
 fi
 
+# 0.1 内存防护：自动检测并配置 2GB Swap 虚拟内存 (防止 2G 内存机型构建 Next.js 时被 OOM 强杀)
+if command -v free >/dev/null 2>&1; then
+    SWAP_TOTAL=$(free -m | awk '/Swap:/ {print $2}')
+    if [ "${SWAP_TOTAL:-0}" -lt 1024 ]; then
+        log_info "检测到服务器 Swap 虚拟内存不足 1GB，正在自动创建 2GB 交换分区 (防构建 OOM)..."
+        $SUDO fallocate -l 2G /swapfile 2>/dev/null || $SUDO dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
+        $SUDO chmod 600 /swapfile
+        $SUDO mkswap /swapfile 2>/dev/null
+        $SUDO swapon /swapfile 2>/dev/null || true
+        if ! grep -q "/swapfile" /etc/fstab 2>/dev/null; then
+            echo '/swapfile none swap sw 0 0' | $SUDO tee -a /etc/fstab >/dev/null
+        fi
+        log_info "Swap 虚拟内存已成功挂载！"
+    fi
+fi
+
 # 1. 检查 Docker 及 Docker Compose
 if ! command -v docker >/dev/null 2>&1; then
     log_warn "未检测到 Docker，正在自动安装 (使用国内加速源)..."

@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         description="前端生产域名或本地开发地址",
     )
 
-    # Supabase Credentials
+    # Supabase Credentials (可选：已开启纯单机模式支持脱机)
     SUPABASE_URL: str = Field(
         default="https://your-project.supabase.co",
         description="Supabase 项目 URL",
@@ -30,6 +30,20 @@ class Settings(BaseSettings):
     SUPABASE_JWT_SECRET: Optional[str] = Field(
         default=None,
         description="Supabase JWT 签名 Secret，用于本地脱机高速验签",
+    )
+
+    # Standalone Mode & Local Auth (单机自用架构)
+    STANDALONE_MODE: bool = Field(
+        default=True,
+        description="是否开启单机自用模式（脱离外部 Supabase 依赖）",
+    )
+    JWT_SECRET: str = Field(
+        default="genesis-standalone-secret-key-at-least-32chars",
+        description="本地内置 JWT 签名密钥",
+    )
+    ADMIN_PASSWORD: Optional[str] = Field(
+        default=None,
+        description="单机管理员访问密码（为空时默认允许首位用户或免密/默认密码进入）",
     )
 
     # LLM API Keys & Base URLs

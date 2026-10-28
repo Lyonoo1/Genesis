@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { Check, Copy, AppWindow } from "lucide-react";
 import { useCanvasStore } from "@/stores/useCanvasStore";
 import { useUIStore } from "@/stores/useUIStore";
+import { copyToClipboard } from "@/lib/clipboard";
 
 interface CodeBlockProps {
   language?: string;
@@ -25,12 +26,10 @@ export function CodeBlock({
   const { isRightSidebarOpen, openRightSidebar } = useUIStore();
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
+    const success = await copyToClipboard(code);
+    if (success) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // fallback
     }
   };
 

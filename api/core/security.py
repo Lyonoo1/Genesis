@@ -71,21 +71,35 @@ async def get_current_user(
                     )
                 except Exception:
                     payload = None
-        elif alg == "HS256" and settings.SUPABASE_JWT_SECRET and "placeholder" not in settings.SUPABASE_JWT_SECRET:
-            try:
-                payload = jwt.decode(
-                    token,
-                    settings.SUPABASE_JWT_SECRET,
-                    algorithms=["HS256"],
-                    audience="authenticated",
-                    options={"verify_exp": True},
-                )
-            except Exception:
-                payload = None
+        elif alg == "HS256":
+            # 1. 优先尝试使用本地 JWT_SECRET 签名验签 (单机独立模式)
+            if settings.JWT_SECRET:
+                try:
+                    payload = jwt.decode(
+                        token,
+                        settings.JWT_SECRET,
+                        algorithms=["HS256"],
+                        options={"verify_exp": True},
+                    )
+                except Exception:
+                    payload = None
+
+            # 2. 备选尝试 Supabase JWT 签名验签 (混合云模式)
+            if payload is None and settings.SUPABASE_JWT_SECRET and "placeholder" not in settings.SUPABASE_JWT_SECRET:
+                try:
+                    payload = jwt.decode(
+                        token,
+                        settings.SUPABASE_JWT_SECRET,
+                        algorithms=["HS256"],
+                        audience="authenticated",
+                        options={"verify_exp": True},
+                    )
+                except Exception:
+                    payload = None
 
         if payload is None:
-            # 开发环境或备用容错，校验 exp 和 payload 结构
-            if settings.ENVIRONMENT == "development":
+            # 开发环境或单机自用容错，校验 exp 和 payload 结构
+            if settings.ENVIRONMENT == "development" or settings.STANDALONE_MODE:
                 payload = jwt.decode(
                     token,
                     options={"verify_signature": False, "verify_exp": True},
@@ -114,7 +128,9 @@ async def get_current_user(
     except AppException:
         raise
     except Exception as e:
-        if settings.ENVIRONMENT == "development" and token == "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJhdWQiOiJhdXRoZW50aWNhdGVkIn0.lGXBlw88KDDIwcFCUxL0_qvZdrgDQCCqFH044XZ3_9o":
+        if (settings.ENVIRONMENT == "development" or settings.STANDALONE_MODE) and (
+            token == "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJhdWQiOiJhdXRoZW50aWNhdGVkIn0.lGXBlw88KDDIwcFCUxL0_qvZdrgDQCCqFH044XZ3_9o"
+        ):
             return default_dev_user
         raise AppException(
             code=ErrorCode.UNAUTHORIZED,
