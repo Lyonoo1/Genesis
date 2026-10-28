@@ -35,7 +35,7 @@ snippet = """
     # ==========================================
     # Genesis AI 智能体工作台专属路由 (独立隔离)
     # ==========================================
-    location /genesis/ {
+    location ^~ /genesis {
         proxy_pass http://127.0.0.1:8888;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -48,10 +48,6 @@ snippet = """
         proxy_cache off;
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
-    }
-
-    location = /genesis {
-        return 301 /genesis/;
     }
 """
 
@@ -75,7 +71,10 @@ def insert_into_servers(content, snippet):
                 depth -= 1
             j += 1
         server_body = content[brace_start + 1 : j - 1]
-        if "location /genesis/" not in server_body:
+        if "location" in server_body and "/genesis" in server_body:
+            server_body = re.sub(r"location\s*=\s*/genesis\s*\{[^}]*\}", "", server_body)
+            server_body = re.sub(r"location\s*(\^~\s*)?/genesis/?\s*\{[^}]*\}", snippet, server_body)
+        else:
             server_body = server_body + "\n" + snippet + "\n"
         result.append(server_body)
         result.append("}")
