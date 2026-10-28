@@ -16,8 +16,7 @@ import { useRouter } from "next/navigation";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { supabase } from "@/lib/supabase/client";
-import { getApiBaseUrl, getAuthToken } from "@/lib/api/client";
+import { getApiBaseUrl, getAuthToken, getBasePath } from "@/lib/api/client";
 
 export function ProfileFooter() {
   const router = useRouter();
@@ -99,7 +98,7 @@ export function ProfileFooter() {
     document.cookie =
       "genesis_auth_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
 
-    window.location.href = "/login";
+    window.location.href = `${getBasePath()}/login`;
   };
 
   // 点击外部关闭 Popover

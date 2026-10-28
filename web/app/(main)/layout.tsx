@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { Folder, PanelRight, PanelRightClose, PanelLeft, PanelLeftOpen, Search } from "lucide-react";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -9,7 +9,7 @@ import { useUIStore } from "@/stores/useUIStore";
 import { useWorkbenchStore } from "@/stores/useWorkbenchStore";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { RightSidebar } from "@/components/inspector/RightSidebar";
-import { supabase } from "@/lib/supabase/client";
+import { getBasePath, getAuthToken } from "@/lib/api/client";
 import dynamic from "next/dynamic";
 
 const TerminalPanel = dynamic(
@@ -57,6 +57,18 @@ export default function MainLayout({
     useWorkbenchStore.getState().switchSessionWorkbench(currentSessionId);
   }, [currentSessionId]);
 
+  // 登录态前置校验 (杜绝未登录用户看到工作台闪烁)
+  const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const token = getAuthToken();
+    if (!token) {
+      window.location.href = `${getBasePath()}/login`;
+      return;
+    }
+    setIsAuthorized(true);
+  }, []);
+
   // 保持滑动无感续期与多账号切换数据隔离，并监听跨 Tab 登出广播
   useEffect(() => {
     const handleRemoteLogout = () => {
@@ -65,7 +77,7 @@ export default function MainLayout({
       localStorage.removeItem("genesis_auth_token");
       document.cookie =
         "genesis_auth_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
-      window.location.href = "/login";
+      window.location.href = `${getBasePath()}/login`;
     };
 
     // 1. 原生跨标签页通信：BroadcastChannel
@@ -89,25 +101,7 @@ export default function MainLayout({
     };
     window.addEventListener("storage", handleStorage);
 
-    // 3. Supabase Auth 状态订阅
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session?.access_token) {
-        localStorage.setItem("genesis_auth_token", session.access_token);
-        const maxAge = session.expires_in || 604800;
-        const isHttps =
-          typeof window !== "undefined" && window.location.protocol === "https:";
-        document.cookie = `genesis_auth_token=${encodeURIComponent(
-          session.access_token
-        )}; path=/; max-age=${maxAge}; SameSite=Lax; ${isHttps ? "Secure;" : ""}`;
-      } else if (event === "SIGNED_OUT") {
-        handleRemoteLogout();
-      }
-    });
-
     return () => {
-      subscription.unsubscribe();
       window.removeEventListener("storage", handleStorage);
       if (bc) {
         bc.close();
@@ -196,6 +190,11 @@ export default function MainLayout({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [pathname, router, toggleLeftSidebar, toggleTerminal]);
+
+  // 未通过鉴权校验前，渲染静默深色底色，彻底杜绝侧边栏与页面闪烁
+  if (!isAuthorized) {
+    return <div className="h-screen w-screen bg-[#090A0F]" />;
+  }
 
   // 如果处于 /settings 路由，整页独占渲染 Codex 风格全屏设置页面
   if (pathname.startsWith("/settings")) {
