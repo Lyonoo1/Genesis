@@ -28,7 +28,7 @@ $SUDO cp -r /etc/nginx/ "${BACKUP_DIR}/"
 log_info "备份完成！如果后续需要回滚，可随时执行恢复。"
 
 # 2. 定位正在生效的站点配置文件 (必须在 sites-enabled 或 conf.d 下，避开 .bak 备份文件)
-$SUDO python3 -c '
+$SUDO python3 << 'EOF'
 import glob, re, sys
 
 snippet = """
@@ -120,7 +120,7 @@ for f in target_files:
         print(f"成功注入 /genesis 路由至激活配置: {f}")
     else:
         print(f"配置已包含 /genesis 路由，无需改动: {f}")
-'
+EOF
 
 # 4. 测试语法并热重载
 log_info "4. 校验 Nginx 配置语法..."
