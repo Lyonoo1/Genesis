@@ -110,6 +110,14 @@ export function EditProjectModal({
 
   const handlePickFolder = async () => {
     if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
+      if (typeof window !== "undefined" && !window.isSecureContext) {
+        alert(
+          "受浏览器安全策略限制：在非 HTTPS（HTTP IP）环境下，浏览器默认禁用本地文件访问功能。\n\n解决办法：\n1. 访问 chrome://flags/#unsafely-treat-insecure-origin-as-secure\n2. 将 " +
+            window.location.origin +
+            " 添加到白名单并设为 Enabled，点击 Relaunch 重启浏览器即可；\n3. 或者配置 HTTPS 域名直接访问。"
+        );
+        return;
+      }
       alert("当前浏览器不支持访问本地文件夹，请使用 Chrome/Edge/Arc。");
       return;
     }
