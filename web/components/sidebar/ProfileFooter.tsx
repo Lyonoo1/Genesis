@@ -17,6 +17,7 @@ import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { getApiBaseUrl, getAuthToken, getBasePath } from "@/lib/api/client";
+import { supabase } from "@/lib/supabase/client";
 
 export function ProfileFooter() {
   const router = useRouter();
