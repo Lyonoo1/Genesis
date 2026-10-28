@@ -24,6 +24,9 @@ WORKDIR /app
 # 先复制依赖定义，利用 Docker 缓存层
 COPY pyproject.toml uv.lock ./
 
+# 双重保障：将锁文件中所有官方下载地址替换为清华大学开源镜像站，确保秒级高速下载
+RUN sed -i 's|files.pythonhosted.org|pypi.tuna.tsinghua.edu.cn|g' uv.lock
+
 # 使用国内 PyPI 源安装依赖
 RUN uv sync --frozen --no-dev --default-index https://pypi.tuna.tsinghua.edu.cn/simple
 
