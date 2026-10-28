@@ -73,3 +73,30 @@ async def test_subagent_concurrency_semaphore_throttling():
     await asyncio.gather(*tasks)
 
     assert max_active_observed <= 2, f"并发子代理超出限制: {max_active_observed}"
+
+
+def test_chat_service_subagent_semaphore_property():
+    """验证 ChatService 提供全局实例级 subagent_semaphore 属性进行多会话统一并发控制"""
+    from services.chat_service import ChatService
+    svc = ChatService()
+    sem1 = svc.subagent_semaphore
+    sem2 = svc.subagent_semaphore
+    assert sem1 is sem2
+    assert isinstance(sem1, asyncio.Semaphore)
+    assert sem1._value == 2
+
+
+def test_has_active_supabase_local_environment():
+    """验证当 STANDALONE_MODE=False 时，本地自建 127.0.0.1 Supabase 能被正确识别为激活状态"""
+    from core.config import Settings
+    # 纯单机模式 -> 始终为 False
+    s_standalone = Settings(STANDALONE_MODE=True, SUPABASE_URL="http://127.0.0.1:54321")
+    assert s_standalone.has_active_supabase is False
+
+    # 占位符 URL -> False
+    s_placeholder = Settings(STANDALONE_MODE=False, SUPABASE_URL="https://your-project.supabase.co")
+    assert s_placeholder.has_active_supabase is False
+
+    # 真实/本地联调 Supabase -> True
+    s_local = Settings(STANDALONE_MODE=False, SUPABASE_URL="http://127.0.0.1:54321")
+    assert s_local.has_active_supabase is True

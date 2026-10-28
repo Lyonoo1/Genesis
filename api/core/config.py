@@ -54,7 +54,7 @@ class Settings(BaseSettings):
         if not self.SUPABASE_URL:
             return False
         lower_url = self.SUPABASE_URL.lower()
-        if "placeholder" in lower_url or "your-project" in lower_url or "127.0.0.1" in lower_url or "localhost" in lower_url:
+        if "placeholder" in lower_url or "your-project" in lower_url:
             return False
         return True
 

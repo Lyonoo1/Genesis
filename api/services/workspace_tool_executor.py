@@ -1250,6 +1250,7 @@ class WorkspaceToolExecutor:
             # 搜索目录
             if type in ("directory", "any"):
                 for d in dirnames:
+                    files_scanned += 1
                     if fnmatch.fnmatch(d, pattern):
                         dp = Path(dirpath) / d
                         rel_path = str(dp.relative_to(root))
@@ -1263,7 +1264,7 @@ class WorkspaceToolExecutor:
                         )
                         if len(matches) >= max_results:
                             break
-                if len(matches) >= max_results:
+                if len(matches) >= max_results or files_scanned >= max_files_scanned:
                     break
 
             # 搜索文件

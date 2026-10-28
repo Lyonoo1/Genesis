@@ -82,6 +82,14 @@ class ChatService:
         self.llm_adapter = llm or llm_adapter
         self.context_manager = ctx_mgr or context_manager
         self._steering_queues: dict[str, asyncio.Queue[str]] = {}
+        self._subagent_semaphore: Optional[asyncio.Semaphore] = None
+
+    @property
+    def subagent_semaphore(self) -> asyncio.Semaphore:
+        """全局并发子代理信号量，限制单机同时运行的最大子代理数为 2"""
+        if self._subagent_semaphore is None:
+            self._subagent_semaphore = asyncio.Semaphore(2)
+        return self._subagent_semaphore
 
     @staticmethod
     def _task_key(user_id: str, session_id: Any) -> str:
@@ -1091,20 +1099,19 @@ class ChatService:
 
                     subagent_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
                     subagent_results: dict[str, dict[str, Any]] = {}
-                    subagent_semaphore = asyncio.Semaphore(2)
 
                     async def _run_single_subagent(
                         sa_tc: dict[str, Any],
                         agent_id: str,
                         q: asyncio.Queue,
                     ) -> None:
-                        """在独立 task 中运行单个子代理，将进度事件推入共享队列，受 Semaphore(2) 并发流控约束"""
-                        async with subagent_semaphore:
-                            sa_args = sa_tc["arguments"]
-                            sa_agent_type = str(sa_args.get("agent_type", "explore"))
-                            sa_task_prompt = str(sa_args.get("task_prompt", ""))
-                            sa_result: dict[str, Any] | None = None
-                            try:
+                        """在独立 task 中运行单个子代理，将进度事件推入共享队列，受全局 subagent_semaphore 保护"""
+                        sa_args = sa_tc["arguments"]
+                        sa_agent_type = str(sa_args.get("agent_type", "explore"))
+                        sa_task_prompt = str(sa_args.get("task_prompt", ""))
+                        sa_result: dict[str, Any] | None = None
+                        try:
+                            async with self.subagent_semaphore:
                                 async for sub_chunk in subagent_runner.run(
                                     workspace_root=workspace_root,
                                     agent_type=sa_agent_type,
@@ -1120,31 +1127,39 @@ class ChatService:
                                         await q.put({"type": "progress", "data": event_data})
                                     elif sub_chunk["type"] == "result":
                                         sa_result = sub_chunk["data"]
-                            except asyncio.CancelledError:
-                                logger.info("并发子代理 [%s] 任务被取消中断", agent_id)
-                                raise
-                            except Exception as e:
-                                logger.error("并发子代理 [%s] 执行异常: %s", agent_id, e)
-                                sa_result = {"success": False, "error": str(e)}
-
+                        except asyncio.CancelledError:
+                            logger.info("并发子代理 [%s] 任务被取消中断", agent_id)
+                            sa_result = {"success": False, "error": "子代理任务已被取消"}
+                            raise
+                        except Exception as e:
+                            logger.error("并发子代理 [%s] 执行异常: %s", agent_id, e)
+                            sa_result = {"success": False, "error": str(e)}
+                        finally:
                             if sa_result is None:
                                 sa_result = {"success": False, "error": "子代理未产出有效结果"}
 
-                        # 发送完成事件
-                        await q.put({
-                            "type": "progress",
-                            "data": {
-                                "event": "subagent_progress",
-                                "agent_id": agent_id,
-                                "agent_type": sa_agent_type,
-                                "task_prompt": sa_task_prompt,
-                                "status": "completed" if sa_result.get("success") else "failed",
-                                "summary_preview": sa_result.get("summary", ""),
-                                "steps_taken": sa_result.get("steps_taken", 0),
-                            },
-                        })
-                        # 标记 task 完成
-                        await q.put({"type": "done", "agent_id": agent_id, "result": sa_result})
+                            # 发送完成事件（若未被取消）
+                            try:
+                                await q.put({
+                                    "type": "progress",
+                                    "data": {
+                                        "event": "subagent_progress",
+                                        "agent_id": agent_id,
+                                        "agent_type": sa_agent_type,
+                                        "task_prompt": sa_task_prompt,
+                                        "status": "completed" if sa_result.get("success") else "failed",
+                                        "summary_preview": sa_result.get("summary", ""),
+                                        "steps_taken": sa_result.get("steps_taken", 0),
+                                    },
+                                })
+                            except Exception:
+                                pass
+
+                            # 核心保障：无论发生取消、异常还是正常完成，必须向队列推送 done 信号，防止主生成协程在 queue.get() 处永久死锁挂起
+                            try:
+                                await q.put({"type": "done", "agent_id": agent_id, "result": sa_result})
+                            except Exception:
+                                pass
 
                     # 为每个子代理创建并发 task
                     running_tasks: list[asyncio.Task] = []
