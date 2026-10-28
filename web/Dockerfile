@@ -26,6 +26,7 @@ ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 ARG NEXT_PUBLIC_BASE_PATH="/genesis"
 ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
 
+RUN mkdir -p /app/public
 RUN pnpm build
 
 # 运行层
@@ -33,6 +34,7 @@ FROM base AS runner
 ENV NODE_ENV=production
 ENV PORT=3000
 
+RUN mkdir -p ./public
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules
