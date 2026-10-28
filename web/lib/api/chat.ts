@@ -1,4 +1,4 @@
-import { getAuthToken, getApiBaseUrl } from "./client";
+import { getAuthToken, getApiBaseUrl, apiFetch } from "./client";
 import { parseSSEStream, SSEEventHandler } from "./streaming";
 import { Message } from "@/types";
 
@@ -99,34 +99,22 @@ export async function steerChatApi(
   sessionId: string,
   content: string
 ): Promise<{ success: boolean; message: string }> {
-  const token = getAuthToken();
-  const res = await fetch(`${API_BASE_URL}/api/chat/${sessionId}/steer`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ content }),
-  });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`插话请求失败 (HTTP ${res.status}): ${errText}`);
-  }
-  return res.json();
+  return apiFetch<{ success: boolean; message: string }>(
+    `/api/chat/${sessionId}/steer`,
+    {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }
+  );
 }
 
 /**
  * 向后端广播中止信号
  */
 export async function stopGenerationApi(sessionId: string): Promise<void> {
-  const token = getAuthToken();
   try {
-    await fetch(`${API_BASE_URL}/api/chat/${sessionId}/stop`, {
+    await apiFetch(`/api/chat/${sessionId}/stop`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
     });
   } catch (err) {
     console.warn("Failed to notify backend stop endpoint:", err);
@@ -141,67 +129,39 @@ export async function approveToolCallApi(
   approvalId: string,
   approved: boolean
 ): Promise<{ status: string }> {
-  const token = getAuthToken();
-  const res = await fetch(`${API_BASE_URL}/api/chat/${sessionId}/approve`, {
+  return apiFetch<{ status: string }>(`/api/chat/${sessionId}/approve`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
     body: JSON.stringify({
       approval_id: approvalId,
       tool_call_id: approvalId,
       approved,
     }),
   });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`Failed to send approval: ${res.status} ${errText}`);
-  }
-
-  return res.json();
 }
 
 /**
  * 终止指定的后台守护进程
  */
 export async function stopProcessApi(pid: number): Promise<{ success: boolean; pid: number; message: string }> {
-  const token = getAuthToken();
-  const res = await fetch(`${API_BASE_URL}/api/chat/processes/${pid}/stop`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`Failed to stop process ${pid}: ${res.status} ${errText}`);
-  }
-
-  return res.json();
+  return apiFetch<{ success: boolean; pid: number; message: string }>(
+    `/api/chat/processes/${pid}/stop`,
+    {
+      method: "POST",
+    }
+  );
 }
 
 /**
  * 获取所有正在运行的后台守护进程列表 (支持按当前会话 session_id 过滤)
  */
 export async function listProcessesApi(sessionId?: string): Promise<{ success: boolean; processes: Array<{ pid: number; command: string; session_id?: string }> }> {
-  const token = getAuthToken();
   const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-  const res = await fetch(`${API_BASE_URL}/api/chat/processes${query}`, {
-    method: "GET",
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Failed to list processes: ${res.status}`);
-  }
-
-  return res.json();
+  return apiFetch<{ success: boolean; processes: Array<{ pid: number; command: string; session_id?: string }> }>(
+    `/api/chat/processes${query}`,
+    {
+      method: "GET",
+    }
+  );
 }
 
 /**
@@ -212,23 +172,13 @@ export async function fetchSessionMessagesApi(
   cursor?: string,
   limit = 50
 ): Promise<{ items: Message[]; next_cursor: string | null }> {
-  const token = getAuthToken();
-  const url = new URL(`${API_BASE_URL}/api/chat/${sessionId}/messages`);
-  if (cursor) url.searchParams.set("cursor", cursor);
-  url.searchParams.set("limit", String(limit));
+  const query = new URLSearchParams();
+  if (cursor) query.set("cursor", cursor);
+  query.set("limit", String(limit));
 
-  const res = await fetch(url.toString(), {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-
-  if (!res.ok) {
-    throw new Error(`Failed to fetch messages: ${res.status}`);
-  }
-
-  return res.json();
+  return apiFetch<{ items: Message[]; next_cursor: string | null }>(
+    `/api/chat/${sessionId}/messages?${query.toString()}`
+  );
 }
 
 /**
@@ -340,21 +290,12 @@ export async function revertFilesApi(
   files: Array<{ path: string; original_content: string }>,
   sessionId?: string
 ): Promise<{ success: boolean; reverted: string[] }> {
-  const token = getAuthToken();
-  const res = await fetch(`${API_BASE_URL}/api/chat/revert`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ files, session_id: sessionId }),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`Failed to revert files: ${res.status} ${errText}`);
-  }
-
-  return res.json();
+  return apiFetch<{ success: boolean; reverted: string[] }>(
+    "/api/chat/revert",
+    {
+      method: "POST",
+      body: JSON.stringify({ files, session_id: sessionId }),
+    }
+  );
 }
 

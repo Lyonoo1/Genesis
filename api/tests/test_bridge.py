@@ -38,3 +38,29 @@ def test_bridge_manager_registration_and_state():
     manager.unregister(uid)
     assert not manager.is_connected(uid)
     assert manager.get_metadata(uid) is None
+
+
+def test_bridge_status_authenticated():
+    from core.security import get_current_user, AuthenticatedUser
+
+    mock_user = AuthenticatedUser(user_id="test-uid-auth", email="test@example.com")
+    app.dependency_overrides[get_current_user] = lambda: mock_user
+
+    try:
+        manager = BridgeManager.get_instance()
+        manager.register(
+            "test-uid-auth",
+            object(),
+            {"hostname": "Auth-Mac", "platform": "darwin", "cwd": "/local/code"},
+        )
+
+        res = client.get("/api/bridge/status")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["connected"] is True
+        assert data["metadata"]["hostname"] == "Auth-Mac"
+        assert data["metadata"]["cwd"] == "/local/code"
+    finally:
+        manager.unregister("test-uid-auth")
+        app.dependency_overrides.pop(get_current_user, None)
+

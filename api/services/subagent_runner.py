@@ -47,10 +47,15 @@ class SubagentRunner:
         self.llm_adapter = llm or llm_adapter
 
     def _get_system_prompt(self, agent_type: str, workspace_root: str) -> str:
+        display_root = workspace_root
+        if workspace_root.startswith("bridge://"):
+            parts = workspace_root[len("bridge://"):].split("::", 1)
+            display_root = parts[1] if len(parts) > 1 else "."
+
         if agent_type == "explore":
             return (
                 "你是 Genesis 代码库探索与架构分析子代理 (Explore Subagent)。\n"
-                f"当前项目物理工作区绝对路径：'{workspace_root}'。\n"
+                f"当前项目物理工作区绝对路径：'{display_root}'。\n"
                 "你的任务：独立在代码库中检索、调研与分析，解答主 Agent 提出的具体代码或架构问题。\n\n"
                 "【严格执行规范】\n"
                 "1. 只读权限：你只拥有只读探索工具（read_file, grep_search, find_by_name, list_dir）。严禁尝试修改或执行文件。\n"
@@ -60,7 +65,7 @@ class SubagentRunner:
         elif agent_type == "verify":
             return (
                 "你是 Genesis 测试验证与排查子代理 (Verify Subagent)。\n"
-                f"当前项目物理工作区绝对路径：'{workspace_root}'。\n"
+                f"当前项目物理工作区绝对路径：'{display_root}'。\n"
                 "你的任务：独立运行测试命令、分析输出、排查报错并精确定位问题根因。\n\n"
                 "【严格执行规范】\n"
                 "1. 权限边界：你仅可使用只读文件工具和命令执行工具（execute_command, read_file, grep_search, find_by_name, list_dir）。严禁修改或删除文件。\n"
@@ -69,7 +74,7 @@ class SubagentRunner:
             )
         else:
             return (
-                f"你是 Genesis 专用只读子代理，工作区：'{workspace_root}'。\n"
+                f"你是 Genesis 专用只读子代理，工作区：'{display_root}'。\n"
                 "请完成调查并给出结构清晰的详尽分析报告。"
             )
 
@@ -277,7 +282,65 @@ class SubagentRunner:
                 else:
                     try:
                         _, _, method = ToolAdapter.parse_namespaced_tool(normalized_name)
-                        if method == "read_file":
+                        if workspace_root.startswith("bridge://"):
+                            from services.bridge_manager import BridgeManager
+                            bridge = BridgeManager.get_instance()
+                            bridge_uid = workspace_root[len("bridge://"):].split("::", 1)[0]
+
+                            if method == "read_file":
+                                res_payload = await bridge.call_rpc(
+                                    bridge_uid,
+                                    "fs.readFile",
+                                    {"path": tc_args.get("path", "")},
+                                    timeout=15,
+                                )
+                            elif method == "grep_search":
+                                res_payload = await bridge.call_rpc(
+                                    bridge_uid,
+                                    "fs.grepSearch",
+                                    {
+                                        "query": tc_args.get("query", ""),
+                                        "path": tc_args.get("path", "."),
+                                        "case_sensitive": tc_args.get("case_sensitive", False),
+                                        "is_regex": tc_args.get("is_regex", False),
+                                    },
+                                    timeout=20,
+                                )
+                            elif method == "find_by_name":
+                                res_payload = await bridge.call_rpc(
+                                    bridge_uid,
+                                    "fs.findByName",
+                                    {
+                                        "pattern": tc_args.get("pattern", "*"),
+                                        "path": tc_args.get("path", "."),
+                                        "type": tc_args.get("type", "any"),
+                                    },
+                                    timeout=15,
+                                )
+                            elif method == "list_dir":
+                                res_payload = await bridge.call_rpc(
+                                    bridge_uid,
+                                    "fs.listDir",
+                                    {
+                                        "path": tc_args.get("path", "."),
+                                        "recursive": tc_args.get("recursive", False),
+                                    },
+                                    timeout=15,
+                                )
+                            elif method == "execute_command" and agent_type == "verify":
+                                res_payload = await bridge.call_rpc(
+                                    bridge_uid,
+                                    "shell.execute",
+                                    {
+                                        "command": tc_args.get("command", ""),
+                                        "timeout": tc_args.get("timeout", 30),
+                                    },
+                                    timeout=35,
+                                )
+                            else:
+                                is_error = True
+                                res_payload = {"error": f"子代理不支持的方法: {method}"}
+                        elif method == "read_file":
                             res_payload = await asyncio.wait_for(
                                 asyncio.to_thread(
                                     WorkspaceToolExecutor.read_file,

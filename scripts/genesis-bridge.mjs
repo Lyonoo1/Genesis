@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Genesis Local Bridge CLI (全功能反向隧道客户端)
+ * Genesis Local Bridge CLI (全功能反向长连接隧道客户端)
  * 
  * 作用：建立访客本地 Mac/PC 与云端 Genesis AI Agent 的双向加密安全隧道。
  * 允许云端智能体：
  * 1. 实时读取、写入和精确修改本地物理文件
- * 2. 在本地执行 Shell 终端指令 (npm test, git diff, npm run dev 等)
+ * 2. 检索工作区文件内容 (grepSearch) 与定位文件 (findByName)
+ * 3. 提取完整目录树供右栏工作台实时浏览
+ * 4. 在本地执行 Shell 终端指令 (npm test, git diff, npm run dev 等)
  * 
  * 零额外依赖：基于 Node.js 18+ 原生内置 WebSocket 与文件系统 API 运行。
  */
@@ -15,14 +17,35 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { exec, spawn } from "node:child_process";
+import { exec } from "node:child_process";
+
+const CONFIG_DIR = path.join(os.homedir(), ".genesis");
+const SAVED_TOKEN_FILE = path.join(CONFIG_DIR, "bridge_token");
+
+function getSavedToken() {
+  try {
+    if (fsSync.existsSync(SAVED_TOKEN_FILE)) {
+      return fsSync.readFileSync(SAVED_TOKEN_FILE, "utf-8").trim();
+    }
+  } catch {}
+  return "";
+}
+
+function saveToken(token) {
+  try {
+    if (!fsSync.existsSync(CONFIG_DIR)) {
+      fsSync.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+    }
+    fsSync.writeFileSync(SAVED_TOKEN_FILE, token, { encoding: "utf-8", mode: 0o600 });
+  } catch {}
+}
 
 // ── 命令行参数解析 ──
 function parseArgs() {
   const args = process.argv.slice(2);
   const options = {
-    server: process.env.GENESIS_SERVER || "http://localhost:8000",
-    token: process.env.GENESIS_TOKEN || "",
+    server: process.env.GENESIS_SERVER || "http://124.221.147.57",
+    token: process.env.GENESIS_TOKEN || getSavedToken() || "",
     dir: process.env.GENESIS_DIR || process.cwd(),
   };
 
@@ -32,24 +55,26 @@ function parseArgs() {
       options.server = args[++i];
     } else if (arg === "--token" || arg === "-t") {
       options.token = args[++i];
+      if (options.token) {
+        saveToken(options.token);
+      }
     } else if (arg === "--dir" || arg === "-d") {
       options.dir = args[++i];
     } else if (arg === "--help" || arg === "-h") {
       console.log(`
-Genesis Local Bridge - 本地反向长连接隧道
+\x1b[1mGenesis Local Bridge\x1b[0m - 本地反向长连接隧道
 
-使用方法:
-  npx genesis-bridge [选项]
+\x1b[36m使用方法:\x1b[0m
   node scripts/genesis-bridge.mjs [选项]
 
-选项:
-  -s, --server <url>   Genesis 服务端地址 (默认: http://localhost:8000)
-  -t, --token <jwt>    Genesis 登录用户的 JWT Token凭证 (必须提供)
-  -d, --dir <path>     允许云端 Agent 访问操作的本地工作区目录 (默认: 当前目录)
+\x1b[36m选项:\x1b[0m
+  -s, --server <url>   Genesis 服务端地址 (默认: http://124.221.147.57)
+  -t, --token <jwt>    Genesis 登录用户的 JWT Token 凭证 (提供一次后将自动保存在本地)
+  -d, --dir <path>     允许云端 Agent 操作的本地工作区目录 (默认: 当前执行目录)
   -h, --help           查看帮助文档
 
-示例:
-  node scripts/genesis-bridge.mjs --server https://genesis.example.com --token eyJhb... --dir ~/code/my-app
+\x1b[36m示例:\x1b[0m
+  node scripts/genesis-bridge.mjs --token eyJhb... --dir ~/Desktop/my-project
       `);
       process.exit(0);
     }
@@ -63,7 +88,9 @@ const WORKSPACE_ROOT = path.resolve(config.dir);
 
 if (!config.token) {
   console.error("\x1b[31m[错误] 必须提供身份凭证 --token <jwt>\x1b[0m");
-  console.error("请前往 Genesis 网页端「设置」页面复制你的登录 Token。");
+  console.error("请前往 Genesis 网页端「设置 -> Bridge」页面复制你的登录 Token。");
+  console.error("\x1b[33m运行示例:\x1b[0m");
+  console.error(`  node scripts/genesis-bridge.mjs --server ${config.server} --token <你的Token> --dir ${WORKSPACE_ROOT}\n`);
   process.exit(1);
 }
 
@@ -80,6 +107,67 @@ function resolveSafePath(relPath) {
     throw new Error(`安全策略拦截：禁止越权访问工作区外部路径 '${relPath}'`);
   }
   return target;
+}
+
+const IGNORE_NAMES = new Set([
+  ".git",
+  "node_modules",
+  ".next",
+  ".venv",
+  "__pycache__",
+  "dist",
+  "build",
+  ".DS_Store",
+  ".turbo",
+  ".cache",
+  ".output",
+  ".genesis",
+  ".genesis_outputs",
+]);
+
+// 递归构建目录树
+async function buildTree(baseDir, currentDir, depth = 0, maxDepth = 6) {
+  if (depth > maxDepth) return [];
+  try {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+
+    const nodes = [];
+    for (const entry of entries) {
+      if (IGNORE_NAMES.has(entry.name) || entry.name.startsWith(".")) continue;
+      const full = path.join(currentDir, entry.name);
+      const relPath = path.relative(baseDir, full).split(path.sep).join("/");
+
+      if (entry.isDirectory()) {
+        const children = await buildTree(baseDir, full, depth + 1, maxDepth);
+        nodes.push({
+          name: entry.name,
+          path: relPath,
+          kind: "directory",
+          children,
+        });
+      } else if (entry.isFile()) {
+        let size = 0;
+        try {
+          const stat = await fs.stat(full);
+          size = stat.size;
+        } catch {}
+        nodes.push({
+          name: entry.name,
+          path: relPath,
+          kind: "file",
+          size,
+        });
+      }
+    }
+    return nodes;
+  } catch {
+    return [];
+  }
 }
 
 // ── RPC 方法分拣执行 ──
@@ -121,21 +209,20 @@ const RPC_HANDLERS = {
     return { success: true, path: filePath };
   },
 
-  // 5. 遍历目录
+  // 5. 遍历目录平铺列表
   "fs.listDir": async ({ path: dirPath = ".", recursive = false }) => {
     const target = resolveSafePath(dirPath);
-    const ignores = new Set([".git", "node_modules", ".next", ".venv", "__pycache__", "dist", "build"]);
     
     async function scan(currentDir, isRec) {
       const entries = await fs.readdir(currentDir, { withFileTypes: true });
       const items = [];
       for (const entry of entries) {
-        if (ignores.has(entry.name)) continue;
+        if (IGNORE_NAMES.has(entry.name) || entry.name.startsWith(".")) continue;
         const full = path.join(currentDir, entry.name);
         const isDir = entry.isDirectory();
         items.push({
           name: entry.name,
-          path: path.relative(WORKSPACE_ROOT, full),
+          path: path.relative(WORKSPACE_ROOT, full).split(path.sep).join("/"),
           is_dir: isDir,
         });
         if (isRec && isDir && items.length < 200) {
@@ -150,7 +237,173 @@ const RPC_HANDLERS = {
     return { success: true, items: items.slice(0, 300) };
   },
 
-  // 6. 本地执行 Shell 命令
+  // 6. 获取完整多级文件树 (供工作台 FileExplorer 渲染)
+  "fs.getTree": async ({ max_depth = 6 } = {}) => {
+    const tree = await buildTree(WORKSPACE_ROOT, WORKSPACE_ROOT, 0, max_depth);
+    return { success: true, tree };
+  },
+
+  // 7. 内容关键词或正则表达式检索
+  "fs.grepSearch": async ({
+    query,
+    path: searchRel = ".",
+    case_sensitive = false,
+    is_regex = false,
+    max_results = 50,
+  }) => {
+    if (!query) return { success: false, error: "检索关键词 query 不能为空" };
+    const target = resolveSafePath(searchRel);
+
+    let regex = null;
+    if (is_regex) {
+      try {
+        regex = new RegExp(query, case_sensitive ? "g" : "gi");
+      } catch (e) {
+        return { success: false, error: `无效正则表达式: ${e.message}` };
+      }
+    }
+
+    const matches = [];
+    let filesScanned = 0;
+    const maxFilesScanned = 1500;
+
+    async function walk(dir, depth = 0) {
+      if (depth > 8 || matches.length >= max_results || filesScanned >= maxFilesScanned) return;
+      const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (matches.length >= max_results || filesScanned >= maxFilesScanned) break;
+        if (IGNORE_NAMES.has(entry.name) || entry.name.startsWith(".")) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full, depth + 1);
+        } else if (entry.isFile()) {
+          filesScanned++;
+          try {
+            const stat = await fs.stat(full);
+            if (stat.size > 2 * 1024 * 1024) continue;
+            const content = await fs.readFile(full, "utf-8");
+            const lines = content.split(/\r?\n/);
+            const relFile = path.relative(WORKSPACE_ROOT, full).split(path.sep).join("/");
+            for (let i = 0; i < lines.length; i++) {
+              if (matches.length >= max_results) break;
+              const line = lines[i];
+              let isMatch = false;
+              if (is_regex && regex) {
+                isMatch = regex.test(line);
+                regex.lastIndex = 0;
+              } else if (!case_sensitive) {
+                isMatch = line.toLowerCase().includes(query.toLowerCase());
+              } else {
+                isMatch = line.includes(query);
+              }
+              if (isMatch) {
+                matches.push({
+                  file: relFile,
+                  line_number: i + 1,
+                  line_content: line.slice(0, 300).trim(),
+                });
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const stat = await fs.stat(target).catch(() => null);
+    if (!stat) return { success: false, error: `检索路径不存在: ${searchRel}` };
+    if (stat.isFile()) {
+      const content = await fs.readFile(target, "utf-8");
+      const lines = content.split(/\r?\n/);
+      const relFile = path.relative(WORKSPACE_ROOT, target).split(path.sep).join("/");
+      for (let i = 0; i < lines.length && matches.length < max_results; i++) {
+        const line = lines[i];
+        let isMatch = is_regex && regex ? regex.test(line) : (!case_sensitive ? line.toLowerCase().includes(query.toLowerCase()) : line.includes(query));
+        if (isMatch) {
+          matches.push({ file: relFile, line_number: i + 1, line_content: line.slice(0, 300).trim() });
+        }
+      }
+    } else {
+      await walk(target);
+    }
+
+    console.log(`\x1b[34m[关键词检索]\x1b[0m "${query}" (匹配 ${matches.length} 处)`);
+    return {
+      success: true,
+      query,
+      total_matches: matches.length,
+      matches,
+      truncated: matches.length >= max_results || filesScanned >= maxFilesScanned,
+    };
+  },
+
+  // 8. 按文件名或通配符查找文件
+  "fs.findByName": async ({
+    pattern = "*",
+    path: searchRel = ".",
+    type = "any",
+    max_results = 50,
+  }) => {
+    if (!pattern) return { success: false, error: "搜索模式 pattern 不能为空" };
+    const target = resolveSafePath(searchRel);
+
+    function globToRegex(pat) {
+      if (pat === "*") return /.*/;
+      const escaped = pat.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+      return new RegExp(`^${escaped}$`, "i");
+    }
+    const reg = globToRegex(pattern);
+    const matches = [];
+
+    async function walk(dir, depth = 0) {
+      if (depth > 8 || matches.length >= max_results) return;
+      const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (matches.length >= max_results) break;
+        if (IGNORE_NAMES.has(entry.name) || entry.name.startsWith(".")) continue;
+        const full = path.join(dir, entry.name);
+        const isDir = entry.isDirectory();
+        const isFile = entry.isFile();
+        const relPath = path.relative(WORKSPACE_ROOT, full).split(path.sep).join("/");
+
+        let matchesType = false;
+        if (type === "any") matchesType = true;
+        else if (type === "dir" || type === "directory") matchesType = isDir;
+        else if (type === "file") matchesType = isFile;
+
+        if (matchesType && reg.test(entry.name)) {
+          let size = 0;
+          if (isFile) {
+            try {
+              const stat = await fs.stat(full);
+              size = stat.size;
+            } catch {}
+          }
+          matches.push({
+            name: entry.name,
+            path: relPath,
+            is_dir: isDir,
+            size,
+          });
+        }
+
+        if (isDir) {
+          await walk(full, depth + 1);
+        }
+      }
+    }
+
+    await walk(target);
+    console.log(`\x1b[34m[文件查找]\x1b[0m "${pattern}" (找到 ${matches.length} 个结果)`);
+    return {
+      success: true,
+      pattern,
+      total_matches: matches.length,
+      matches,
+      truncated: matches.length >= max_results,
+    };
+  },
+
+  // 9. 本地执行 Shell 命令
   "shell.execute": async ({ command, timeout = 60 }) => {
     console.log(`\x1b[36m[命令执行]\x1b[0m ${command}`);
     return new Promise((resolve) => {
@@ -184,7 +437,7 @@ const RPC_HANDLERS = {
     });
   },
 
-  // 7. 心跳保活
+  // 10. 心跳保活
   "bridge.ping": async () => {
     return { pong: Date.now() };
   },
@@ -231,6 +484,7 @@ function connect() {
 
     if (msg.type === "bridge_ready") {
       console.log(`\x1b[32m✔ 隧道已就绪！云端 Agent 现在可以实时编辑与操作你的本地代码。\x1b[0m`);
+      console.log(`  工作区挂载目录: ${WORKSPACE_ROOT}`);
       console.log(`  保持当前终端运行，按 Ctrl+C 可断开。\n`);
       return;
     }

@@ -14,6 +14,7 @@ import {
   Gauge,
   Database,
   Puzzle,
+  Radio,
   ChevronLeft,
   ChevronRight,
   Sidebar as SidebarIcon,
@@ -28,6 +29,7 @@ import { UsageTab } from "./components/UsageTab";
 import { DatabaseTab } from "./components/DatabaseTab";
 import { ProfileTab } from "./components/ProfileTab";
 import { PluginsTab } from "./components/PluginsTab";
+import { BridgeTab } from "./components/BridgeTab";
 
 interface NavItem {
   id: SettingsTab;
@@ -48,6 +50,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: "database", name: "数据库看板", icon: Database, section: "personal" },
 
   // 集成分组
+  { id: "bridge", name: "本地 Bridge", icon: Radio, section: "integration" },
   { id: "plugins", name: "插件", icon: Puzzle, section: "integration" },
 ];
 
@@ -237,6 +240,7 @@ function SettingsContent() {
         {activeSettingsTab === "usage" && <UsageTab />}
         {activeSettingsTab === "database" && <DatabaseTab />}
         {activeSettingsTab === "profile" && <ProfileTab />}
+        {activeSettingsTab === "bridge" && <BridgeTab />}
         {activeSettingsTab === "plugins" && <PluginsTab />}
       </main>
     </div>

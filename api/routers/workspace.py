@@ -74,6 +74,30 @@ async def get_workspace_tree(
         session_id=session_id,
     )
 
+    if ws_root.startswith("bridge://"):
+        from services.bridge_manager import BridgeManager
+        bridge = BridgeManager.get_instance()
+        uid = ws_root[len("bridge://"):].split("::", 1)[0]
+        meta = bridge.get_metadata(uid) or {}
+        local_cwd = meta.get("cwd", ".")
+        root_name = Path(local_cwd).name or "local-workspace"
+        res = await bridge.call_rpc(uid, "fs.getTree", {}, timeout=15)
+        if res.get("success"):
+            return {
+                "success": True,
+                "workspace_root": local_cwd,
+                "name": root_name,
+                "tree": res.get("tree", []),
+                "is_bridge": True,
+            }
+        return {
+            "success": False,
+            "workspace_root": local_cwd,
+            "tree": [],
+            "error": res.get("error", "通过本地 Bridge 获取文件树失败"),
+            "is_bridge": True,
+        }
+
     root_path = Path(ws_root).resolve()
     if not root_path.exists() or not root_path.is_dir():
         return {
@@ -102,6 +126,23 @@ async def get_workspace_file(
         user_id=user.id,
         session_id=session_id,
     )
+
+    if ws_root.startswith("bridge://"):
+        from services.bridge_manager import BridgeManager
+        bridge = BridgeManager.get_instance()
+        uid = ws_root[len("bridge://"):].split("::", 1)[0]
+        res = await bridge.call_rpc(uid, "fs.readFile", {"path": path}, timeout=15)
+        if not res.get("success"):
+            raise HTTPException(status_code=404, detail=res.get("error", f"文件不存在: {path}"))
+        content = res.get("content", "")
+        return {
+            "success": True,
+            "path": path,
+            "name": Path(path).name,
+            "content": content,
+            "size": len(content.encode("utf-8")),
+            "is_bridge": True,
+        }
 
     try:
         full_path = WorkspaceToolExecutor.resolve_safe_path(ws_root, path)

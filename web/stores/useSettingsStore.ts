@@ -3,6 +3,7 @@ import { create } from "zustand";
 export type DensityMode = "comfortable" | "compact";
 export type SettingsTab =
   | "general"
+  | "bridge"
   | "models"
   | "history"
   | "appearance"
