@@ -82,6 +82,22 @@ def insert_into_servers(content, snippet):
         i = j
     return "".join(result)
 
+def bypass_301(content):
+    if 'if ($request_uri !~ "^/genesis")' in content:
+        return content
+    lines = content.splitlines()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("return 301 https://") and stripped.endswith(";"):
+            indent = line[:len(line) - len(line.lstrip())]
+            new_lines.append(f'{indent}if ($request_uri !~ "^/genesis") {{')
+            new_lines.append(f"{indent}    {stripped}")
+            new_lines.append(f"{indent}}}")
+        else:
+            new_lines.append(line)
+    return "\n".join(new_lines)
+
 patterns = ["/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf"]
 target_files = []
 for p in patterns:
@@ -96,7 +112,8 @@ if not target_files:
 for f in target_files:
     with open(f, "r", encoding="utf-8") as fp:
         orig = fp.read()
-    patched = insert_into_servers(orig, snippet)
+    step1 = bypass_301(orig)
+    patched = insert_into_servers(step1, snippet)
     if patched != orig:
         with open(f, "w", encoding="utf-8") as fp:
             fp.write(patched)
