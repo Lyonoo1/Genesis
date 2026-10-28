@@ -275,30 +275,46 @@ class SubagentRunner:
                     try:
                         _, _, method = ToolAdapter.parse_namespaced_tool(normalized_name)
                         if method == "read_file":
-                            res_payload = WorkspaceToolExecutor.read_file(
-                                workspace_root=workspace_root,
-                                path=tc_args.get("path", ""),
+                            res_payload = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    WorkspaceToolExecutor.read_file,
+                                    workspace_root=workspace_root,
+                                    path=tc_args.get("path", ""),
+                                ),
+                                timeout=15.0,
                             )
                         elif method == "grep_search":
-                            res_payload = WorkspaceToolExecutor.grep_search(
-                                workspace_root=workspace_root,
-                                query=tc_args.get("query", ""),
-                                path=tc_args.get("path", "."),
-                                case_sensitive=tc_args.get("case_sensitive", False),
-                                is_regex=tc_args.get("is_regex", False),
+                            res_payload = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    WorkspaceToolExecutor.grep_search,
+                                    workspace_root=workspace_root,
+                                    query=tc_args.get("query", ""),
+                                    path=tc_args.get("path", "."),
+                                    case_sensitive=tc_args.get("case_sensitive", False),
+                                    is_regex=tc_args.get("is_regex", False),
+                                ),
+                                timeout=15.0,
                             )
                         elif method == "find_by_name":
-                            res_payload = WorkspaceToolExecutor.find_by_name(
-                                workspace_root=workspace_root,
-                                pattern=tc_args.get("pattern", "*"),
-                                path=tc_args.get("path", "."),
-                                type=tc_args.get("type", "any"),
+                            res_payload = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    WorkspaceToolExecutor.find_by_name,
+                                    workspace_root=workspace_root,
+                                    pattern=tc_args.get("pattern", "*"),
+                                    path=tc_args.get("path", "."),
+                                    type=tc_args.get("type", "any"),
+                                ),
+                                timeout=15.0,
                             )
                         elif method == "list_dir":
-                            res_payload = WorkspaceToolExecutor.list_dir(
-                                workspace_root=workspace_root,
-                                path=tc_args.get("path", "."),
-                                recursive=tc_args.get("recursive", False),
+                            res_payload = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    WorkspaceToolExecutor.list_dir,
+                                    workspace_root=workspace_root,
+                                    path=tc_args.get("path", "."),
+                                    recursive=tc_args.get("recursive", False),
+                                ),
+                                timeout=15.0,
                             )
                         elif method == "execute_command" and agent_type == "verify":
                             res_payload = await WorkspaceToolExecutor.execute_command(

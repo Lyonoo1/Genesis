@@ -172,6 +172,14 @@ class WorkspaceToolExecutor:
         ".next",
         "dist",
         "build",
+        ".turbo",
+        ".cache",
+        "coverage",
+        ".output",
+        ".nuxt",
+        "target",
+        "vendor",
+        ".gemini",
     }
     _background_tasks: dict[int, dict[str, Any]] = {}
 
@@ -1146,19 +1154,32 @@ class WorkspaceToolExecutor:
             except Exception:
                 pass
 
+        files_scanned = 0
+        max_files_scanned = 2000
+        max_depth = 8
+
         if target.is_file():
             _search_in_file(target)
         else:
             for dirpath, dirnames, filenames in os.walk(str(target)):
+                try:
+                    rel_dir = Path(dirpath).relative_to(target)
+                    depth = len(rel_dir.parts)
+                except Exception:
+                    depth = 0
+                if depth >= max_depth:
+                    dirnames.clear()
+
                 dirnames[:] = [d for d in dirnames if d not in cls.EXCLUDED_SEARCH_DIRS]
                 for f in filenames:
                     if f in (".DS_Store",):
                         continue
                     fp = Path(dirpath) / f
+                    files_scanned += 1
                     _search_in_file(fp)
-                    if len(matches) >= max_results:
+                    if len(matches) >= max_results or files_scanned >= max_files_scanned:
                         break
-                if len(matches) >= max_results:
+                if len(matches) >= max_results or files_scanned >= max_files_scanned:
                     break
 
         return {
@@ -1166,7 +1187,7 @@ class WorkspaceToolExecutor:
             "query": query,
             "total_matches": len(matches),
             "matches": matches,
-            "truncated": len(matches) >= max_results,
+            "truncated": len(matches) >= max_results or files_scanned >= max_files_scanned,
         }
 
     @classmethod
@@ -1211,7 +1232,19 @@ class WorkspaceToolExecutor:
                 "truncated": False,
             }
 
+        files_scanned = 0
+        max_files_scanned = 2000
+        max_depth = 8
+
         for dirpath, dirnames, filenames in os.walk(str(target)):
+            try:
+                rel_dir = Path(dirpath).relative_to(target)
+                depth = len(rel_dir.parts)
+            except Exception:
+                depth = 0
+            if depth >= max_depth:
+                dirnames.clear()
+
             dirnames[:] = [d for d in dirnames if d not in cls.EXCLUDED_SEARCH_DIRS]
 
             # 搜索目录
@@ -1236,6 +1269,7 @@ class WorkspaceToolExecutor:
             # 搜索文件
             if type in ("file", "any"):
                 for f in filenames:
+                    files_scanned += 1
                     if fnmatch.fnmatch(f, pattern):
                         fp = Path(dirpath) / f
                         rel_path = str(fp.relative_to(root))
@@ -1252,9 +1286,9 @@ class WorkspaceToolExecutor:
                                 "size": size,
                             }
                         )
-                        if len(matches) >= max_results:
+                        if len(matches) >= max_results or files_scanned >= max_files_scanned:
                             break
-                if len(matches) >= max_results:
+                if len(matches) >= max_results or files_scanned >= max_files_scanned:
                     break
 
         return {
@@ -1262,7 +1296,7 @@ class WorkspaceToolExecutor:
             "pattern": pattern,
             "total_matches": len(matches),
             "matches": matches,
-            "truncated": len(matches) >= max_results,
+            "truncated": len(matches) >= max_results or files_scanned >= max_files_scanned,
         }
 
     @classmethod

@@ -808,34 +808,54 @@ class ChatService:
                                     else:
                                         res_payload = {"success": False, "error": f"Bridge 模式暂不支持工具: {method}"}
                                 elif method == "delete_file":
-                                    res_payload = WorkspaceToolExecutor.delete_file(
-                                        workspace_root=workspace_root,
-                                        path=tc_args.get("path", ""),
+                                    res_payload = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            WorkspaceToolExecutor.delete_file,
+                                            workspace_root=workspace_root,
+                                            path=tc_args.get("path", ""),
+                                        ),
+                                        timeout=15.0,
                                     )
                                 elif method == "write_file":
-                                    res_payload = WorkspaceToolExecutor.write_file(
-                                        workspace_root=workspace_root,
-                                        path=tc_args.get("path", ""),
-                                        content=tc_args.get("content", ""),
-                                        overwrite=tc_args.get("overwrite", True),
+                                    res_payload = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            WorkspaceToolExecutor.write_file,
+                                            workspace_root=workspace_root,
+                                            path=tc_args.get("path", ""),
+                                            content=tc_args.get("content", ""),
+                                            overwrite=tc_args.get("overwrite", True),
+                                        ),
+                                        timeout=15.0,
                                     )
                                 elif method == "edit_file":
-                                    res_payload = WorkspaceToolExecutor.edit_file(
-                                        workspace_root=workspace_root,
-                                        path=tc_args.get("path", ""),
-                                        old_string=tc_args.get("old_string", ""),
-                                        new_string=tc_args.get("new_string", ""),
+                                    res_payload = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            WorkspaceToolExecutor.edit_file,
+                                            workspace_root=workspace_root,
+                                            path=tc_args.get("path", ""),
+                                            old_string=tc_args.get("old_string", ""),
+                                            new_string=tc_args.get("new_string", ""),
+                                        ),
+                                        timeout=15.0,
                                     )
                                 elif method == "read_file":
-                                    res_payload = WorkspaceToolExecutor.read_file(
-                                        workspace_root=workspace_root,
-                                        path=tc_args.get("path", ""),
+                                    res_payload = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            WorkspaceToolExecutor.read_file,
+                                            workspace_root=workspace_root,
+                                            path=tc_args.get("path", ""),
+                                        ),
+                                        timeout=15.0,
                                     )
                                 elif method == "list_dir":
-                                    res_payload = WorkspaceToolExecutor.list_dir(
-                                        workspace_root=workspace_root,
-                                        path=tc_args.get("path", "."),
-                                        recursive=tc_args.get("recursive", False),
+                                    res_payload = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            WorkspaceToolExecutor.list_dir,
+                                            workspace_root=workspace_root,
+                                            path=tc_args.get("path", "."),
+                                            recursive=tc_args.get("recursive", False),
+                                        ),
+                                        timeout=15.0,
                                     )
                                 elif method == "execute_command":
                                     res_payload = await WorkspaceToolExecutor.execute_command(
@@ -846,19 +866,27 @@ class ChatService:
                                         session_id=str(session_id),
                                     )
                                 elif method == "grep_search":
-                                    res_payload = WorkspaceToolExecutor.grep_search(
-                                        workspace_root=workspace_root,
-                                        query=tc_args.get("query", ""),
-                                        path=tc_args.get("path", "."),
-                                        case_sensitive=tc_args.get("case_sensitive", False),
-                                        is_regex=tc_args.get("is_regex", False),
+                                    res_payload = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            WorkspaceToolExecutor.grep_search,
+                                            workspace_root=workspace_root,
+                                            query=tc_args.get("query", ""),
+                                            path=tc_args.get("path", "."),
+                                            case_sensitive=tc_args.get("case_sensitive", False),
+                                            is_regex=tc_args.get("is_regex", False),
+                                        ),
+                                        timeout=20.0,
                                     )
                                 elif method == "find_by_name":
-                                    res_payload = WorkspaceToolExecutor.find_by_name(
-                                        workspace_root=workspace_root,
-                                        pattern=tc_args.get("pattern", "*"),
-                                        path=tc_args.get("path", "."),
-                                        type=tc_args.get("type", "any"),
+                                    res_payload = await asyncio.wait_for(
+                                        asyncio.to_thread(
+                                            WorkspaceToolExecutor.find_by_name,
+                                            workspace_root=workspace_root,
+                                            pattern=tc_args.get("pattern", "*"),
+                                            path=tc_args.get("path", "."),
+                                            type=tc_args.get("type", "any"),
+                                        ),
+                                        timeout=15.0,
                                     )
                                 elif method == "stop_process":
                                     pid_val = int(tc_args.get("pid", 0))
