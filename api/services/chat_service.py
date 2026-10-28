@@ -1091,42 +1091,44 @@ class ChatService:
 
                     subagent_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
                     subagent_results: dict[str, dict[str, Any]] = {}
+                    subagent_semaphore = asyncio.Semaphore(2)
 
                     async def _run_single_subagent(
                         sa_tc: dict[str, Any],
                         agent_id: str,
                         q: asyncio.Queue,
                     ) -> None:
-                        """在独立 task 中运行单个子代理，将进度事件推入共享队列"""
-                        sa_args = sa_tc["arguments"]
-                        sa_agent_type = str(sa_args.get("agent_type", "explore"))
-                        sa_task_prompt = str(sa_args.get("task_prompt", ""))
-                        sa_result: dict[str, Any] | None = None
-                        try:
-                            async for sub_chunk in subagent_runner.run(
-                                workspace_root=workspace_root,
-                                agent_type=sa_agent_type,
-                                task_prompt=sa_task_prompt,
-                                model=req.model,
-                                api_key=req.api_key,
-                                base_url=req.base_url,
-                                provider=req.provider,
-                                max_steps=8,
-                            ):
-                                if sub_chunk["type"] == "progress":
-                                    event_data = {**sub_chunk["data"], "agent_id": agent_id}
-                                    await q.put({"type": "progress", "data": event_data})
-                                elif sub_chunk["type"] == "result":
-                                    sa_result = sub_chunk["data"]
-                        except asyncio.CancelledError:
-                            logger.info("并发子代理 [%s] 任务被取消中断", agent_id)
-                            raise
-                        except Exception as e:
-                            logger.error("并发子代理 [%s] 执行异常: %s", agent_id, e)
-                            sa_result = {"success": False, "error": str(e)}
+                        """在独立 task 中运行单个子代理，将进度事件推入共享队列，受 Semaphore(2) 并发流控约束"""
+                        async with subagent_semaphore:
+                            sa_args = sa_tc["arguments"]
+                            sa_agent_type = str(sa_args.get("agent_type", "explore"))
+                            sa_task_prompt = str(sa_args.get("task_prompt", ""))
+                            sa_result: dict[str, Any] | None = None
+                            try:
+                                async for sub_chunk in subagent_runner.run(
+                                    workspace_root=workspace_root,
+                                    agent_type=sa_agent_type,
+                                    task_prompt=sa_task_prompt,
+                                    model=req.model,
+                                    api_key=req.api_key,
+                                    base_url=req.base_url,
+                                    provider=req.provider,
+                                    max_steps=8,
+                                ):
+                                    if sub_chunk["type"] == "progress":
+                                        event_data = {**sub_chunk["data"], "agent_id": agent_id}
+                                        await q.put({"type": "progress", "data": event_data})
+                                    elif sub_chunk["type"] == "result":
+                                        sa_result = sub_chunk["data"]
+                            except asyncio.CancelledError:
+                                logger.info("并发子代理 [%s] 任务被取消中断", agent_id)
+                                raise
+                            except Exception as e:
+                                logger.error("并发子代理 [%s] 执行异常: %s", agent_id, e)
+                                sa_result = {"success": False, "error": str(e)}
 
-                        if sa_result is None:
-                            sa_result = {"success": False, "error": "子代理未产出有效结果"}
+                            if sa_result is None:
+                                sa_result = {"success": False, "error": "子代理未产出有效结果"}
 
                         # 发送完成事件
                         await q.put({

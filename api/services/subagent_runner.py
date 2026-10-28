@@ -156,6 +156,9 @@ class SubagentRunner:
                                 "arguments": chunk.arguments or {},
                             }
                         )
+            except asyncio.CancelledError:
+                logger.info("Subagent [%s] 模型生成被取消中断", agent_type)
+                raise
             except Exception as stream_err:
                 logger.error("Subagent [%s] 模型调用异常: %s", agent_type, stream_err)
                 final_summary = f"[Subagent 异常终止] 模型生成异常: {stream_err}"
