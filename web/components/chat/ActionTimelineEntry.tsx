@@ -81,12 +81,7 @@ function parseDiffStats(output: unknown): { additions: number; deletions: number
 export function ActionTimelineEntry({ toolCall, isStreaming }: ActionTimelineEntryProps) {
   const [isDetailOpen, setIsDetailOpen] = React.useState(false);
   const meta = getActionMeta(toolCall.name, toolCall.args);
-
-  // todo_write returns null — skip rendering
-  if (!meta) return null;
-
-  const Icon = meta.icon;
-  const isSubagent = meta.category === "subagent";
+  const isSubagent = meta?.category === "subagent";
   const rawId = toolCall.id || "";
   const agentId = rawId ? (rawId.startsWith("agent-") ? rawId : `agent-${rawId}`) : "";
 
@@ -97,6 +92,11 @@ export function ActionTimelineEntry({ toolCall, isStreaming }: ActionTimelineEnt
     const panel = currentSessionTabs.find((t) => t.kind === "subagent-panel") as any;
     return panel?.agents?.find((a: any) => a.id === agentId || a.id === rawId) || null;
   });
+
+  // todo_write returns null — skip rendering
+  if (!meta) return null;
+
+  const Icon = meta.icon;
 
   // 状态精准解析：子代理优先以其实际执行状态为准；流式中止或非流式状态下彻底杜绝死循环 loading
   let status: "running" | "success" | "failed" = "success";

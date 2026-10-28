@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useCallback } from "react";
-import { Terminal as TerminalIcon, RotateCcw, Trash2, Maximize2 } from "lucide-react";
+import { Terminal as TerminalIcon, RotateCcw, Trash2 } from "lucide-react";
 import type { Terminal } from "@xterm/xterm";
 import { XtermCanvas } from "@/components/terminal/XtermCanvas";
 import { restartTerminalSession } from "@/lib/api/terminal";

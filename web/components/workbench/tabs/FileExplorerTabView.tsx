@@ -1,9 +1,8 @@
 "use client";
 
-import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
 import {
-  Folder,
   FileCode,
   Search,
   X,
@@ -14,10 +13,9 @@ import {
 } from "lucide-react";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { useCanvasStore } from "@/stores/useCanvasStore";
-import { useWorkbenchStore } from "@/stores/useWorkbenchStore";
 import { useLocalWorkspace } from "@/hooks/useLocalWorkspace";
 import { useSessionStore } from "@/stores/useSessionStore";
-import { WorkspaceFileNode, readLocalFile } from "@/lib/workspace/localWorkspaceManager";
+import { WorkspaceFileNode } from "@/lib/workspace/localWorkspaceManager";
 import { BreadcrumbsDropdown } from "../BreadcrumbsDropdown";
 import { EditorLoadingSkeleton } from "@/components/canvas/EditorLoadingSkeleton";
 

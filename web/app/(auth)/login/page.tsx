@@ -3,24 +3,9 @@
 import React, { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Eye, EyeOff, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
-import { supabase } from "@/lib/supabase/client";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { InteractiveGridBackground } from "@/components/auth/InteractiveGridBackground";
 import { getApiBaseUrl } from "@/lib/api/client";
-
-/**
- * 账号归一化：
- * 1. 标准邮箱格式直接保留
- * 2. 纯用户名通过 UTF-8 Hex 安全编码映射为合规 ASCII 邮箱
- *    从根源上杜绝 GoTrue 认证引擎抛出 "Unable to validate email address: invalid format" 报错
- */
-function resolveAccountToEmail(account: string): string {
-  const clean = account.trim().toLowerCase();
-  if (clean.includes("@")) {
-    return clean;
-  }
-  return `${clean}@genesis.local`;
-}
 
 /**
  * 行业规范错误信息映射：

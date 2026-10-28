@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { Folder, PanelRight, PanelRightClose, PanelLeft, PanelLeftOpen, Search } from "lucide-react";
+import { Folder, PanelRight, PanelLeft, PanelLeftOpen, Search } from "lucide-react";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useUIStore } from "@/stores/useUIStore";
@@ -10,15 +10,6 @@ import { useWorkbenchStore } from "@/stores/useWorkbenchStore";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { RightSidebar } from "@/components/inspector/RightSidebar";
 import { getBasePath, getAuthToken } from "@/lib/api/client";
-import dynamic from "next/dynamic";
-
-const TerminalPanel = dynamic(
-  () =>
-    import("@/components/terminal/TerminalPanel").then(
-      (mod) => mod.TerminalPanel
-    ),
-  { ssr: false }
-);
 
 
 export default function MainLayout({
