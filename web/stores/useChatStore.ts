@@ -687,8 +687,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
               const agentType = (data.agent_type === "verify" ? "verify" : "explore") as "explore" | "verify";
 
-              // 确保面板和实例存在
-              wb.openSubagentPanel(sessionId);
+              // 确保面板和实例存在（流式更新时不抢占用户自选的 Tab 焦点）
+              wb.openSubagentPanel(sessionId, false);
               const panel = wb.tabs.find(t => t.kind === "subagent-panel") as any;
               if (panel && !panel.agents?.some((a: any) => a.id === agentId)) {
                 wb.addAgentInstance(agentId, agentType, data.task_prompt || "", sessionId);

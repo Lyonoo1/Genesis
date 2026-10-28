@@ -68,10 +68,9 @@ export function ChatInputBar({
     requestAccess,
   } = useLocalWorkspace(targetProjectId);
 
-  // 项目下未关联文件夹校验逻辑：仅在明确属于某个项目时生效；独立对话（targetProjectId 为 null）不需要关联
+  // 项目下未关联文件夹校验逻辑：仅在明确属于某个项目且完全未设置过关联文件夹时成立
   const isProjectFolderMissing = Boolean(
-    targetProjectId &&
-      (!currentProject?.folder_name || localStatus === "DISCONNECTED_DEVICE")
+    targetProjectId && !currentProject?.folder_name
   );
 
   const handlePickAndLinkFolder = async () => {
@@ -175,20 +174,13 @@ export function ChatInputBar({
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // 项目关联文件夹前置校验：如果属于项目且未关联文件夹，必须主动关联才能进行对话
-    if (targetProjectId) {
-      if (isProjectFolderMissing) {
-        const handle = await attachDirectory();
-        if (!handle) {
-          return; // 用户取消选择或失败，阻止发送
-        }
-        await updateProject(targetProjectId, { folder_name: handle.name });
-      } else if (localStatus === "NEED_PERMISSION") {
-        const granted = await requestAccess();
-        if (!granted) {
-          return; // 用户未授权访问，阻止发送
-        }
+    // 项目关联文件夹前置校验：仅当属于项目且完全未设置过关联文件夹时进行拦截引导
+    if (targetProjectId && isProjectFolderMissing) {
+      const handle = await attachDirectory();
+      if (!handle) {
+        return; // 用户取消选择，阻止发送
       }
+      await updateProject(targetProjectId, { folder_name: handle.name });
     }
 
     // 运行中实时插话 (Mid-task Steering)：不中断当前任务，加入 Codex 悬浮排队托盘
@@ -310,8 +302,8 @@ export function ChatInputBar({
                   <HardDrive className="w-4 h-4 text-amber-400 shrink-0" />
                   <span className="truncate">
                     {localStatus === "NEED_PERMISSION"
-                      ? `项目「${currentProject?.name || "当前项目"}」已关联文件夹「${currentProject?.folder_name || directoryName}」，需授权访问方可对话`
-                      : `项目「${currentProject?.name || "当前项目"}」尚未关联本地文件夹，必须关联后方可对话`}
+                      ? `项目「${currentProject?.name || "当前项目"}」已关联文件夹「${currentProject?.folder_name || directoryName}」，需轻点授权访问本地文件`
+                      : `项目「${currentProject?.name || "当前项目"}」尚未关联本地文件夹，建议关联以同步代码`}
                   </span>
                 </div>
                 <button

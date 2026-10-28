@@ -19,6 +19,7 @@ from routers.models import router as models_router
 from routers.terminal import router as terminal_router
 from routers.preview import router as preview_router
 from routers.auth import router as auth_router
+from routers.workspace import router as workspace_router
 from contextlib import asynccontextmanager
 from routers.bridge import router as bridge_router
 from routers.db_viewer import router as db_viewer_router
@@ -59,6 +60,7 @@ app.include_router(bridge_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(preview_router, prefix="/api")
 app.include_router(preview_router)
+app.include_router(workspace_router, prefix="/api")
 
 # 仅开发环境允许通过 Web 查看和执行任意 SQL
 if is_dev:

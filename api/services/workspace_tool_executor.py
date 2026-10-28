@@ -196,8 +196,13 @@ class WorkspaceToolExecutor:
             target = (root / raw_p).resolve()
 
         # 核心防穿越：目标路径必须严格位于工作区根目录下或与根目录一致
-        if not (str(target) == str(root) or str(target).startswith(str(root) + os.sep)):
-            raise PermissionError(f"安全策略拦截：禁止访问工作区外部路径 '{relative_path}'")
+        try:
+            if not (target == root or target.is_relative_to(root)):
+                raise PermissionError(f"安全策略拦截：禁止访问工作区外部路径 '{relative_path}'")
+        except AttributeError:
+            common = os.path.commonpath([str(target), str(root)])
+            if common != str(root):
+                raise PermissionError(f"安全策略拦截：禁止访问工作区外部路径 '{relative_path}'")
         return target
 
     @classmethod

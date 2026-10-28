@@ -380,7 +380,7 @@ interface WorkbenchState {
   }) => void;
   resetFileExplorerTab: () => void;
   // Subagent panel methods
-  openSubagentPanel: (sessionId?: string) => string;
+  openSubagentPanel: (sessionId?: string, autoFocus?: boolean) => string;
   addAgentInstance: (
     agentId: string,
     agentType: "explore" | "verify",
@@ -1134,7 +1134,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           }));
         },
 
-        openSubagentPanel: (sessionId) => {
+        openSubagentPanel: (sessionId, autoFocus = true) => {
           if (sessionId && get().activeSessionId !== sessionId) {
             get().switchSessionWorkbench(sessionId);
           }
@@ -1147,7 +1147,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           ) as SubagentPanelTabConfig | undefined;
 
           if (existingPanel) {
-            if (currentData.activeTabId !== existingPanel.id) {
+            if (autoFocus && currentData.activeTabId !== existingPanel.id) {
               mutateSession(
                 () => ({
                   activeTabId: existingPanel.id,
@@ -1155,7 +1155,9 @@ export const useWorkbenchStore = create<WorkbenchState>()(
                 sid
               );
             }
-            useUIStore.getState().openRightSidebar();
+            if (autoFocus) {
+              useUIStore.getState().openRightSidebar();
+            }
             return existingPanel.id;
           }
 
@@ -1184,17 +1186,19 @@ export const useWorkbenchStore = create<WorkbenchState>()(
               : [...data.tabs, newPanelTab];
             return {
               tabs: newTabs,
-              activeTabId: panelTabId,
+              activeTabId: autoFocus ? panelTabId : data.activeTabId || panelTabId,
               cachedSubagents: restoredAgents.length > 0 ? restoredAgents : data.cachedSubagents,
             };
           }, sid);
 
-          useUIStore.getState().openRightSidebar();
+          if (autoFocus) {
+            useUIStore.getState().openRightSidebar();
+          }
           return panelTabId;
         },
 
         addAgentInstance: (agentId, agentType, taskPrompt, sessionId) => {
-          get().openSubagentPanel(sessionId);
+          get().openSubagentPanel(sessionId, false);
           const sid = sessionId || get().activeSessionId || DEFAULT_INITIAL_SESSION;
           const currentData = get().workbenchBySession[sid] || createDefaultSessionWorkbench(sid);
           const panelTab = currentData.tabs.find((t) => t.kind === "subagent-panel") as SubagentPanelTabConfig | undefined;

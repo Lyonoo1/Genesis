@@ -8,13 +8,16 @@ import { useSessionStore } from "@/stores/useSessionStore";
 export function QuickNavSection() {
   const router = useRouter();
   const pathname = usePathname();
-  const { startNewChat, activeSessionId } = useSessionStore();
+  const { createSession, setActiveProjectId, activeSessionId } = useSessionStore();
 
   const isNewChatActive = pathname === "/chat" && !activeSessionId;
 
-  const handleNewChat = () => {
-    startNewChat();
-    router.push("/chat");
+  const handleNewChat = async () => {
+    setActiveProjectId(null);
+    const newSession = await createSession("新对话");
+    if (newSession?.id) {
+      router.push(`/chat/${newSession.id}`);
+    }
   };
 
   return (

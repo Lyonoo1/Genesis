@@ -801,7 +801,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setActiveSessionId: (id: string | null) => {
-    set({ activeSessionId: id, editingSessionId: null });
+    const currentSess = id ? get().sessions.find((s) => s.id === id) : null;
+    set({
+      activeSessionId: id,
+      activeProjectId: currentSess?.project_id || null,
+      editingSessionId: null,
+    });
   },
 
   setSearchQuery: (query: string) => {

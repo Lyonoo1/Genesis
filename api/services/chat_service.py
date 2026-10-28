@@ -149,14 +149,16 @@ class ChatService:
         if explicit_path and os.path.isdir(explicit_path):
             return os.path.abspath(explicit_path)
 
-        # 尝试通过 session -> project 反查项目名称
+        # 尝试通过 session -> project 反查项目名称与关联文件夹
         project_name: Optional[str] = None
+        project_folder: Optional[str] = None
         try:
             sess = await self.session_repo.get_by_id(user_id, session_id)
             if sess and sess.get("project_id"):
                 proj = await self.project_repo.get_by_id(user_id, sess["project_id"])
                 if proj:
                     project_name = proj.get("name")
+                    project_folder = proj.get("folder_path") or proj.get("folder_name")
         except Exception as e:
             logger.warning("查询 Session/Project 关联异常: %s", e)
 
@@ -165,24 +167,55 @@ class ChatService:
         if env_root and os.path.isdir(env_root):
             return os.path.abspath(env_root)
 
+        # 针对常见 Docker 容器化部署路径检查 (/app)
+        if os.path.isdir("/app") and os.path.exists("/app/api"):
+            if project_folder and os.path.isdir(os.path.join("/app", project_folder)):
+                return os.path.join("/app", project_folder)
+            return "/app"
+
         current_file = os.path.abspath(__file__)
+        # api/services/chat_service.py -> api -> Genesis
         genesis_root = os.path.abspath(os.path.join(current_file, "..", "..", ".."))
         parent_dir = os.path.abspath(os.path.join(genesis_root, ".."))
 
-        if project_name:
-            if os.path.basename(parent_dir).lower() == project_name.lower():
-                return parent_dir
-            if os.path.basename(genesis_root).lower() == project_name.lower():
-                return genesis_root
-            candidate = os.path.join(parent_dir, project_name)
-            if os.path.isdir(candidate):
-                return candidate
+        system_roots = {"/", "/root", "/home", "/var", "/etc", "/usr", "/tmp", "/bin", "/opt", "/lib", "Desktop", "Users"}
+        is_safe_parent = (
+            os.path.isdir(parent_dir)
+            and parent_dir != "/"
+            and os.path.basename(parent_dir) not in system_roots
+        )
 
-        # 默认回退至父目录（例如外层 agentProject 目录）或 genesis_root
-        if os.path.isdir(parent_dir) and os.path.basename(parent_dir) not in ["Desktop", "Users", "home", "root"]:
+        # 如果项目关联了文件夹名或路径
+        for candidate_name in [project_folder, project_name]:
+            if not candidate_name:
+                continue
+            if os.path.isabs(candidate_name) and os.path.isdir(candidate_name):
+                return candidate_name
+            if is_safe_parent:
+                if os.path.basename(parent_dir).lower() == candidate_name.lower():
+                    return parent_dir
+                cand = os.path.join(parent_dir, candidate_name)
+                if os.path.isdir(cand):
+                    return cand
+            if os.path.isdir(genesis_root):
+                if os.path.basename(genesis_root).lower() == candidate_name.lower():
+                    return genesis_root
+                cand = os.path.join(genesis_root, candidate_name)
+                if os.path.isdir(cand):
+                    return cand
+
+        # 默认回退至安全父目录或 genesis_root
+        if is_safe_parent:
             return parent_dir
 
-        return genesis_root
+        if os.path.isdir(genesis_root) and genesis_root != "/":
+            return genesis_root
+
+        cwd = os.getcwd()
+        if cwd != "/":
+            return cwd
+
+        return "/app" if os.path.isdir("/app") else genesis_root
 
     async def collect_tools(self, user_id: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """收集当前用户所有可用的 Standard Tools，并建立反向查询元数据索引"""

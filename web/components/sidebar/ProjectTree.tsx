@@ -198,7 +198,7 @@ export function ProjectTree() {
   };
 
   const handleSelectSession = (session: Session, projectId?: string) => {
-    if (projectId) setActiveProjectId(projectId);
+    setActiveProjectId(projectId || null);
     setActiveSessionId(session.id);
     router.push(`/chat/${session.id}`);
   };
@@ -456,14 +456,6 @@ export function ProjectTree() {
                           className: "w-4 h-4 text-[#ECECED] stroke-[1.6] shrink-0",
                         })}
                         <span className="truncate">{project.name}</span>
-                        {project.folder_name && (
-                          <span
-                            className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono shrink-0 truncate max-w-[85px]"
-                            title={`已关联本地文件夹: ${project.folder_name}`}
-                          >
-                            {project.folder_name}
-                          </span>
-                        )}
                       </div>
 
                       {/* 右侧悬浮操作按钮组 */}
@@ -637,28 +629,50 @@ export function ProjectTree() {
             })}
       </div>
 
-      {/* 2. 最近分区 (Recent) */}
-      <div className="pt-2 group/recent-header">
-        <button
-          type="button"
-          onClick={() => setIsRecentOpen(!isRecentOpen)}
-          className="flex items-center gap-1 px-2.5 h-7 text-[12px] font-medium text-[#7E7E82] hover:text-[#ECECED] transition-colors cursor-pointer w-full text-left"
-        >
-          <span>最近</span>
-          <ChevronRight
-            className={`w-3.5 h-3.5 text-[#7E7E82] transition-all duration-150 ${
-              isRecentOpen
-                ? "rotate-90 opacity-100 text-[#ECECED]"
-                : "opacity-0 group-hover/recent-header:opacity-100"
-            }`}
-          />
-        </button>
+      {/* 2. 对话分区 */}
+      <div className="pt-2 group/dialog-header">
+        <div className="flex items-center justify-between px-2.5 h-7 text-[12px] font-medium text-[#7E7E82]">
+          <button
+            type="button"
+            onClick={() => setIsRecentOpen(!isRecentOpen)}
+            className="flex items-center gap-1 hover:text-[#ECECED] transition-colors cursor-pointer"
+          >
+            <span>对话</span>
+            <ChevronRight
+              className={`w-3.5 h-3.5 text-[#7E7E82] transition-all duration-150 ${
+                isRecentOpen
+                  ? "rotate-90 opacity-100 text-[#ECECED]"
+                  : "opacity-0 group-hover/dialog-header:opacity-100"
+              }`}
+            />
+          </button>
+
+          {/* 右侧新增独立对话按钮 (与现有项目组保持一致的笔图标 SquarePen) */}
+          <button
+            type="button"
+            onClick={async (e) => {
+              e.stopPropagation();
+              if (!isRecentOpen) {
+                setIsRecentOpen(true);
+              }
+              setActiveProjectId(null);
+              const newSess = await createSession("新对话");
+              if (newSess?.id) {
+                router.push(`/chat/${newSess.id}`);
+              }
+            }}
+            className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer opacity-0 group-hover/dialog-header:opacity-100"
+            title="添加新对话"
+          >
+            <SquarePen className="w-3.5 h-3.5" />
+          </button>
+        </div>
 
         {isRecentOpen && (
           <div className="space-y-0.5 mt-1 animate-in fade-in duration-150">
             {standaloneSessions.length === 0 ? (
               <div className="pl-2.5 py-1 text-[12px] text-codex-subtle">
-                暂无独立对话
+                暂无对话
               </div>
             ) : (
               standaloneSessions.map((session) => (

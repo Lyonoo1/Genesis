@@ -16,6 +16,7 @@ import { useCanvasStore } from "@/stores/useCanvasStore";
 import { useLocalWorkspace } from "@/hooks/useLocalWorkspace";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { WorkspaceFileNode } from "@/lib/workspace/localWorkspaceManager";
+import { fetchWorkspaceTreeApi, fetchWorkspaceFileApi } from "@/lib/api/workspace";
 import { BreadcrumbsDropdown } from "../BreadcrumbsDropdown";
 import { EditorLoadingSkeleton } from "@/components/canvas/EditorLoadingSkeleton";
 
@@ -175,6 +176,34 @@ export function FileExplorerTabView({
     saveToLocalDisk,
   } = useCanvasStore();
 
+  const [serverTree, setServerTree] = useState<WorkspaceFileNode[]>([]);
+  const [serverWorkspaceName, setServerWorkspaceName] = useState<string>("");
+  const [isLoadingServerTree, setIsLoadingServerTree] = useState(false);
+
+  // 当本地磁盘未连接或不支持时，自动加载服务端工作区文件树（解决云端部署下右栏空白）
+  useEffect(() => {
+    if (localStatus !== "CONNECTED") {
+      let isCancelled = false;
+      setIsLoadingServerTree(true);
+      fetchWorkspaceTreeApi(activeSession?.id, resolvedProjectId)
+        .then((res) => {
+          if (!isCancelled && res?.success && Array.isArray(res.tree)) {
+            setServerTree(res.tree);
+            if (res.name) setServerWorkspaceName(res.name);
+          }
+        })
+        .catch((e) => {
+          console.debug("获取服务端工作区文件树失败:", e);
+        })
+        .finally(() => {
+          if (!isCancelled) setIsLoadingServerTree(false);
+        });
+      return () => {
+        isCancelled = true;
+      };
+    }
+  }, [localStatus, activeSession?.id, resolvedProjectId]);
+
   const [viewMode, setViewMode] = useState<"preview" | "code">("preview");
   const [filterQuery, setFilterQuery] = useState("");
   const [isTreeVisible, setIsTreeVisible] = useState(true);
@@ -197,7 +226,7 @@ export function FileExplorerTabView({
     await saveToLocalDisk(resolvedProjectId);
   }, [activeArtifact, saveToLocalDisk, resolvedProjectId]);
 
-  // 读取并打开选中的本地文件
+  // 读取并打开选中的文件 (支持本地句柄与服务端双模)
   const handleSelectFileItem = useCallback(
     async (filePath: string) => {
       let content = "";
@@ -232,10 +261,21 @@ export function FileExplorerTabView({
         } catch (e) {
           console.warn("读取本地文件失败，使用已有缓存:", e);
         }
+      } else {
+        // 3. 本地未连接时，从服务端工作区读取真实文件内容
+        try {
+          const sRes = await fetchWorkspaceFileApi(filePath, activeSession?.id);
+          if (sRes?.success && sRes.content !== undefined) {
+            content = sRes.content;
+            if (sRes.name) name = sRes.name;
+          }
+        } catch (e) {
+          console.debug("从服务端读取文件失败，使用已有缓存:", e);
+        }
       }
       onSelectFile(filePath, content, name);
     },
-    [artifacts, localStatus, resolvedProjectId, onSelectFile]
+    [artifacts, localStatus, resolvedProjectId, activeSession?.id, onSelectFile]
   );
 
   // 左右拖拽调整文件树宽度
@@ -266,7 +306,10 @@ export function FileExplorerTabView({
     if (localStatus === "CONNECTED" && fileTree.length > 0) {
       return fileTree;
     }
-    // 未挂载本地文件夹时，自动由 artifacts 合成树状层级，保障面包屑与树永远可用
+    if (serverTree.length > 0) {
+      return serverTree;
+    }
+    // 未挂载本地文件夹且无服务端文件时，自动由 artifacts 合成树状层级，保障面包屑与树永远可用
     const arts = Object.values(artifacts);
     if (arts.length === 0) return [];
 
@@ -306,7 +349,7 @@ export function FileExplorerTabView({
       }
     }
     return rootNodes;
-  }, [localStatus, fileTree, artifacts]);
+  }, [localStatus, fileTree, serverTree, artifacts]);
 
   // 过滤树节点
   const filteredTree = useMemo(() => {
@@ -397,22 +440,22 @@ export function FileExplorerTabView({
                 <FileCode className="w-6 h-6 stroke-[1.8]" />
               </div>
               <h3 className="text-sm font-semibold text-white mb-1">
-                {localStatus === "CONNECTED"
+                {effectiveFileTree.length > 0
                   ? "未选择文件"
                   : localStatus === "NEED_PERMISSION"
                   ? "需要唤醒访问权限"
-                  : "未连接本地工作区"}
+                  : "未连接工作区"}
               </h3>
               <p className="text-xs text-[#71717A] max-w-xs mb-4">
-                {localStatus === "CONNECTED"
-                  ? "在右侧目录树或上方搜索框中选择文件直接预览与编辑"
+                {effectiveFileTree.length > 0
+                  ? "在右侧目录树中选择文件直接预览与代码编辑"
                   : localStatus === "NEED_PERMISSION"
                   ? `已关联文件夹 "${directoryName || currentProject?.folder_name || '本地目录'}"，浏览器安全机制需轻点一次重新授权`
                   : currentProject?.folder_name
-                  ? `原项目关联目录: ${currentProject.folder_name}，当前环境需重新关联`
+                  ? `关联项目目录: ${currentProject.folder_name}，可关联本地或在右侧查看云端文件`
                   : "关联本地文件夹以同步浏览并实时编辑本地项目代码"}
               </p>
-              {localStatus === "NEED_PERMISSION" ? (
+              {effectiveFileTree.length === 0 && localStatus === "NEED_PERMISSION" ? (
                 <button
                   type="button"
                   onClick={requestAccess}
@@ -421,7 +464,7 @@ export function FileExplorerTabView({
                   <HardDrive className="w-3.5 h-3.5" />
                   <span>点击唤醒访问权限</span>
                 </button>
-              ) : localStatus !== "CONNECTED" ? (
+              ) : effectiveFileTree.length === 0 && localStatus !== "CONNECTED" ? (
                 <button
                   type="button"
                   onClick={handleAttachDirectory}
@@ -454,8 +497,28 @@ export function FileExplorerTabView({
             style={{ width: `${treeWidth}px` }}
             className="flex flex-col min-h-0 h-full bg-[#18181A] shrink-0 select-none overflow-hidden"
           >
-            {/* 顶部搜索筛选框 (图 2 样式) */}
-            <div className="p-2 border-b border-[#242427]">
+            {/* 顶部工作区标识与搜索筛选框 */}
+            <div className="p-2 border-b border-[#242427] space-y-1.5">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-[11px] font-medium text-[#A1A1AA] flex items-center gap-1.5 truncate">
+                  <Folders className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                  <span className="truncate">
+                    {localStatus === "CONNECTED"
+                      ? directoryName || "本地工作区"
+                      : serverWorkspaceName || currentProject?.folder_name || "云端工作区"}
+                  </span>
+                </span>
+                {localStatus !== "CONNECTED" && (
+                  <button
+                    type="button"
+                    onClick={handleAttachDirectory}
+                    className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors cursor-pointer shrink-0"
+                    title="关联本地文件夹以同步本地代码"
+                  >
+                    关联本地
+                  </button>
+                )}
+              </div>
               <div className="relative flex items-center bg-[#141416] border border-white/10 rounded-lg px-2.5 py-1 focus-within:border-white/20 transition-colors">
                 <Search className="w-3.5 h-3.5 text-[#71717A] mr-1.5 shrink-0" />
                 <input
@@ -473,9 +536,36 @@ export function FileExplorerTabView({
               </div>
             </div>
 
-            {/* 文件树列表 (图 2 样式) */}
+            {/* 文件树列表 (支持本地与服务端双模) */}
             <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5 scrollbar-thin">
-              {localStatus === "NEED_PERMISSION" ? (
+              {isLoadingServerTree || isScanning ? (
+                <div className="h-full flex items-center justify-center text-xs text-[#71717A]">
+                  正在扫描工作区...
+                </div>
+              ) : effectiveFileTree.length > 0 ? (
+                filterQuery ? (
+                  filteredTree.map((item) => (
+                    <div
+                      key={item.path}
+                      onClick={() => handleSelectFileItem(item.path)}
+                      className="flex items-center gap-1.5 py-1 px-2 rounded-md hover:bg-white/[0.08] cursor-pointer text-xs font-mono"
+                    >
+                      {getFileLanguageBadge(item.name)}
+                      <span className="truncate text-[#D4D4D8]">{item.name}</span>
+                    </div>
+                  ))
+                ) : (
+                  effectiveFileTree.map((node) => (
+                    <FileTreeNodeItem
+                      key={node.path}
+                      node={node}
+                      activePath={selectedFilePath || ""}
+                      onSelectFile={handleSelectFileItem}
+                      level={0}
+                    />
+                  ))
+                )
+              ) : localStatus === "NEED_PERMISSION" ? (
                 <div className="h-full flex flex-col items-center justify-center p-4 text-center select-none">
                   <div className="text-xs text-emerald-400 font-medium mb-1">
                     已关联: {directoryName || currentProject?.folder_name || "本地目录"}
@@ -489,12 +579,12 @@ export function FileExplorerTabView({
                     唤醒授权
                   </button>
                 </div>
-              ) : localStatus !== "CONNECTED" ? (
+              ) : (
                 <div className="h-full flex flex-col items-center justify-center p-4 text-center select-none">
-                  <div className="text-xs text-[#71717A] mb-1">目录树未连接</div>
+                  <div className="text-xs text-[#71717A] mb-1">目录树为空或未连接</div>
                   {currentProject?.folder_name && (
                     <div className="text-[11px] text-[#A1A1AA] mb-2 truncate max-w-[180px]">
-                      原关联: {currentProject.folder_name}
+                      关联目录: {currentProject.folder_name}
                     </div>
                   )}
                   <button
@@ -502,34 +592,9 @@ export function FileExplorerTabView({
                     onClick={handleAttachDirectory}
                     className="px-3 py-1 bg-white/[0.08] hover:bg-white/15 text-xs text-white rounded-md transition-colors cursor-pointer"
                   >
-                    关联文件夹
+                    关联本地文件夹
                   </button>
                 </div>
-              ) : effectiveFileTree.length === 0 ? (
-                <div className="h-full flex items-center justify-center text-xs text-[#71717A]">
-                  {isScanning ? "正在扫描工作区..." : "目录为空"}
-                </div>
-              ) : filterQuery ? (
-                filteredTree.map((item) => (
-                  <div
-                    key={item.path}
-                    onClick={() => handleSelectFileItem(item.path)}
-                    className="flex items-center gap-1.5 py-1 px-2 rounded-md hover:bg-white/[0.08] cursor-pointer text-xs font-mono"
-                  >
-                    {getFileLanguageBadge(item.name)}
-                    <span className="truncate text-[#D4D4D8]">{item.name}</span>
-                  </div>
-                ))
-              ) : (
-                effectiveFileTree.map((node) => (
-                  <FileTreeNodeItem
-                    key={node.path}
-                    node={node}
-                    activePath={selectedFilePath || ""}
-                    onSelectFile={handleSelectFileItem}
-                    level={0}
-                  />
-                ))
               )}
             </div>
           </div>
