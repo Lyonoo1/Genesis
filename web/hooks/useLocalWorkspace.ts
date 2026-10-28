@@ -61,8 +61,15 @@ export function useLocalWorkspace(projectId: string | null) {
         setStatus("CONNECTED");
         setIsScanning(true);
         try {
-          const tree = await scanDirectory(handle);
+          // 5秒超时保护，防止复杂工程或深层目录造成前端主线程无限期阻塞
+          const treePromise = scanDirectory(handle);
+          const timeoutPromise = new Promise<WorkspaceFileNode[]>((resolve) =>
+            setTimeout(() => resolve([]), 5000)
+          );
+          const tree = await Promise.race([treePromise, timeoutPromise]);
           setFileTree(tree);
+        } catch (scanErr) {
+          console.warn("扫描本地工作区失败:", scanErr);
         } finally {
           setIsScanning(false);
         }

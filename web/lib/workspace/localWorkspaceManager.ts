@@ -147,7 +147,7 @@ export async function scanDirectory(
   if (typeof dirHandle.entries === "function") {
     try {
       for await (const [name, entry] of dirHandle.entries()) {
-        if (IGNORE_PATTERNS.has(name)) continue;
+        if (name.startsWith(".") || IGNORE_PATTERNS.has(name)) continue;
         if (countRef.current >= maxFiles) break;
 
         const relPath = currentPath ? `${currentPath}/${name}` : name;

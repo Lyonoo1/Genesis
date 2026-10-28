@@ -180,29 +180,36 @@ export function FileExplorerTabView({
   const [serverWorkspaceName, setServerWorkspaceName] = useState<string>("");
   const [isLoadingServerTree, setIsLoadingServerTree] = useState(false);
 
-  // 当本地磁盘未连接或不支持时，自动加载服务端工作区文件树（解决云端部署下右栏空白）
+  // 自动加载工作区文件树（解决云端部署下右栏空白，优先本地树，无本地则加载服务端/Bridge树）
   useEffect(() => {
-    if (localStatus !== "CONNECTED") {
-      let isCancelled = false;
-      setIsLoadingServerTree(true);
-      fetchWorkspaceTreeApi(activeSession?.id, resolvedProjectId)
-        .then((res) => {
-          if (!isCancelled && res?.success && Array.isArray(res.tree)) {
-            setServerTree(res.tree);
-            if (res.name) setServerWorkspaceName(res.name);
-          }
-        })
-        .catch((e) => {
-          console.debug("获取服务端工作区文件树失败:", e);
-        })
-        .finally(() => {
-          if (!isCancelled) setIsLoadingServerTree(false);
-        });
-      return () => {
-        isCancelled = true;
-      };
+    let isCancelled = false;
+
+    // 如果本地已经连接且有文件树，则不需要重复加载服务端树
+    if (localStatus === "CONNECTED" && fileTree.length > 0) {
+      setIsLoadingServerTree(false);
+      return;
     }
-  }, [localStatus, activeSession?.id, resolvedProjectId]);
+
+    setIsLoadingServerTree(true);
+    fetchWorkspaceTreeApi(activeSession?.id, resolvedProjectId)
+      .then((res) => {
+        if (!isCancelled && res?.success && Array.isArray(res.tree)) {
+          setServerTree(res.tree);
+          if (res.name) setServerWorkspaceName(res.name);
+        }
+      })
+      .catch((e) => {
+        console.debug("获取服务端工作区文件树失败:", e);
+      })
+      .finally(() => {
+        setIsLoadingServerTree(false);
+      });
+
+    return () => {
+      isCancelled = true;
+      setIsLoadingServerTree(false);
+    };
+  }, [localStatus, fileTree.length, activeSession?.id, resolvedProjectId]);
 
   const [viewMode, setViewMode] = useState<"preview" | "code">("preview");
   const [filterQuery, setFilterQuery] = useState("");
