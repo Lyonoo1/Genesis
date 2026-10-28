@@ -4,6 +4,10 @@ ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy
 
+# 替换为清华大学开源镜像源加速 Debian 软件包下载 (提速数十倍，告别 deb.debian.org 龟速)
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list 2>/dev/null || true
+
 # 补充基础依赖、Node.js 运行时与安装 uv (配置国内镜像源加速)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
