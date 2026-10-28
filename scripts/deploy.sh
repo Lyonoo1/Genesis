@@ -115,6 +115,12 @@ if [ -z "$GENESIS_PORT" ]; then
         log_info "为防端口冲突，Genesis 自动映射至端口 8888 (支持由宿主机 Nginx 转发并复用 SSL 证书)"
         TARGET_PORT=8888
         export GENESIS_PORT=8888
+
+        # 自动安全挂载宿主机 Nginx 路由 (免去手动运行 setup_host_nginx.sh)
+        if [ -f "${ROOT_DIR}/scripts/setup_host_nginx.sh" ]; then
+            log_info "正在自动执行宿主机 Nginx 备份与 /genesis 路由挂载..."
+            bash "${ROOT_DIR}/scripts/setup_host_nginx.sh" || true
+        fi
     fi
 fi
 

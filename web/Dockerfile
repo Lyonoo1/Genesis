@@ -10,7 +10,9 @@ WORKDIR /app
 # 依赖层
 FROM base AS deps
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm config set registry https://registry.npmmirror.com && pnpm install --frozen-lockfile
+RUN pnpm config set registry https://registry.npmmirror.com && \
+    pnpm config set strict-dep-builds false && \
+    pnpm install --frozen-lockfile
 
 # 构建层
 FROM base AS builder
