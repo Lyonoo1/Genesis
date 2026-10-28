@@ -83,6 +83,8 @@ class ProjectRepository:
             "name": project_in.name,
             "icon": project_in.icon,
             "description": project_in.description,
+            "folder_name": project_in.folder_name,
+            "folder_path": project_in.folder_path,
             "is_expanded": True,
             "is_archived": False,
             "created_at": now,
@@ -115,6 +117,10 @@ class ProjectRepository:
             update_data["icon"] = project_in.icon
         if project_in.description is not None:
             update_data["description"] = project_in.description
+        if project_in.folder_name is not None:
+            update_data["folder_name"] = project_in.folder_name
+        if project_in.folder_path is not None:
+            update_data["folder_path"] = project_in.folder_path
         if project_in.is_expanded is not None:
             update_data["is_expanded"] = project_in.is_expanded
         if project_in.is_archived is not None:

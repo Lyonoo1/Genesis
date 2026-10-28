@@ -34,6 +34,8 @@ class InMemoryProjectRepository(ProjectRepository):
             "user_id": str(user_id),
             "name": project_in.name,
             "icon": project_in.icon,
+            "folder_name": project_in.folder_name,
+            "folder_path": project_in.folder_path,
             "is_expanded": True,
             "is_archived": False,
             "created_at": now,
@@ -51,6 +53,10 @@ class InMemoryProjectRepository(ProjectRepository):
             proj["name"] = project_in.name
         if project_in.icon is not None:
             proj["icon"] = project_in.icon
+        if project_in.folder_name is not None:
+            proj["folder_name"] = project_in.folder_name
+        if project_in.folder_path is not None:
+            proj["folder_path"] = project_in.folder_path
         if project_in.is_expanded is not None:
             proj["is_expanded"] = project_in.is_expanded
         if project_in.is_archived is not None:
@@ -83,12 +89,13 @@ def test_client(mock_user):
 
 
 def test_project_crud_lifecycle(test_client):
-    # 1. 创建项目
-    res = test_client.post("/api/projects", json={"name": "测试项目 Alpha"})
+    # 1. 创建项目 (带关联文件夹)
+    res = test_client.post("/api/projects", json={"name": "测试项目 Alpha", "folder_name": "genesis-workspace"})
     assert res.status_code == 201
     data = res.json()
     project_id = data["id"]
     assert data["name"] == "测试项目 Alpha"
+    assert data["folder_name"] == "genesis-workspace"
     assert data["is_expanded"] is True
     assert data["is_archived"] is False
 
@@ -98,15 +105,17 @@ def test_project_crud_lifecycle(test_client):
     items = res.json()
     assert len(items) == 1
     assert items[0]["id"] == project_id
+    assert items[0]["folder_name"] == "genesis-workspace"
 
-    # 3. 更新项目信息（重命名 + 归档）
+    # 3. 更新项目信息（重命名 + 更换关联文件夹 + 归档）
     res = test_client.patch(
         f"/api/projects/{project_id}",
-        json={"name": "测试项目 Beta", "is_archived": True},
+        json={"name": "测试项目 Beta", "folder_name": "new-workspace", "is_archived": True},
     )
     assert res.status_code == 200
     updated = res.json()
     assert updated["name"] == "测试项目 Beta"
+    assert updated["folder_name"] == "new-workspace"
     assert updated["is_archived"] is True
 
     # 4. 删除项目

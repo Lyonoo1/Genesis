@@ -82,10 +82,15 @@ export function EditProjectModal({
         setIcon(project.icon || "folder");
         setDescription(project.description || "");
         setIsArchived(!!project.is_archived);
+        if (project.folder_name) {
+          setSelectedFolderName(project.folder_name);
+        }
         getDirectoryHandle(project.id).then((handle) => {
           if (handle) {
             setSelectedFolderHandle(handle);
             setSelectedFolderName(handle.name);
+          } else if (project.folder_name) {
+            setSelectedFolderName(project.folder_name);
           } else {
             setSelectedFolderHandle(null);
             setSelectedFolderName("");
@@ -150,8 +155,9 @@ export function EditProjectModal({
 
     setLoading(true);
     try {
+      const folderName = selectedFolderName || selectedFolderHandle?.name || undefined;
       if (isCreate) {
-        const newProj = addProject(trimmed, description.trim() || undefined, icon);
+        const newProj = addProject(trimmed, description.trim() || undefined, icon, folderName);
         if (selectedFolderHandle && newProj?.id) {
           try {
             await saveDirectoryHandle(newProj.id, selectedFolderHandle);
@@ -164,6 +170,7 @@ export function EditProjectModal({
           name: trimmed,
           icon,
           description: description.trim() || undefined,
+          folder_name: folderName,
           is_archived: isArchived,
         });
         if (selectedFolderHandle) {

@@ -30,7 +30,7 @@ export function StopAndArchiveModal() {
     // 1. 如果正在流式响应，强力优先停止生成并中止子代理
     try {
       const chatState = useChatStore.getState();
-      if (chatState.isStreaming) {
+      if (chatState.isStreamingForSession(targetId)) {
         await chatState.stopGeneration(targetId);
       }
     } catch (e) {

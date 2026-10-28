@@ -50,8 +50,8 @@ export function MessageContainer({ sessionId }: MessageContainerProps) {
     if (activeId && activeId !== prevSessionIdRef.current) {
       const prev = prevSessionIdRef.current;
       prevSessionIdRef.current = activeId;
-      const isStreaming = useChatStore.getState().isStreaming;
-      if (!isStreaming || !prev) {
+      const isTargetStreaming = useChatStore.getState().isStreamingForSession(activeId);
+      if (!isTargetStreaming || !prev) {
         scrollToBottom(false);
       }
     }

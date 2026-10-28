@@ -147,16 +147,26 @@ export function FileExplorerTabView({
   selectedFilePath,
   onSelectFile,
 }: FileExplorerTabViewProps) {
-  const { activeProjectId, activeSessionId, sessions } = useSessionStore();
+  const { activeProjectId, activeSessionId, sessions, projects, updateProject } = useSessionStore();
   const activeSession = (sessions || []).find((s) => s && s.id === activeSessionId);
-  const resolvedProjectId = activeProjectId || activeSession?.project_id || null;
+  const resolvedProjectId = activeSession?.project_id || activeProjectId || null;
+  const currentProject = (projects || []).find((p) => p && p.id === resolvedProjectId);
 
   const {
     status: localStatus,
+    directoryName,
     fileTree,
     isScanning,
     attachDirectory,
+    requestAccess,
   } = useLocalWorkspace(resolvedProjectId);
+
+  const handleAttachDirectory = async () => {
+    const handle = await attachDirectory();
+    if (handle && resolvedProjectId) {
+      updateProject(resolvedProjectId, { folder_name: handle.name });
+    }
+  };
 
   const {
     artifacts,
@@ -387,23 +397,40 @@ export function FileExplorerTabView({
                 <FileCode className="w-6 h-6 stroke-[1.8]" />
               </div>
               <h3 className="text-sm font-semibold text-white mb-1">
-                {localStatus === "CONNECTED" ? "未选择文件" : "未连接本地工作区"}
+                {localStatus === "CONNECTED"
+                  ? "未选择文件"
+                  : localStatus === "NEED_PERMISSION"
+                  ? "需要唤醒访问权限"
+                  : "未连接本地工作区"}
               </h3>
               <p className="text-xs text-[#71717A] max-w-xs mb-4">
                 {localStatus === "CONNECTED"
                   ? "在右侧目录树或上方搜索框中选择文件直接预览与编辑"
+                  : localStatus === "NEED_PERMISSION"
+                  ? `已关联文件夹 "${directoryName || currentProject?.folder_name || '本地目录'}"，浏览器安全机制需轻点一次重新授权`
+                  : currentProject?.folder_name
+                  ? `原项目关联目录: ${currentProject.folder_name}，当前环境需重新关联`
                   : "关联本地文件夹以同步浏览并实时编辑本地项目代码"}
               </p>
-              {localStatus !== "CONNECTED" && (
+              {localStatus === "NEED_PERMISSION" ? (
                 <button
                   type="button"
-                  onClick={attachDirectory}
+                  onClick={requestAccess}
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-xs text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm font-medium"
+                >
+                  <HardDrive className="w-3.5 h-3.5" />
+                  <span>点击唤醒访问权限</span>
+                </button>
+              ) : localStatus !== "CONNECTED" ? (
+                <button
+                  type="button"
+                  onClick={handleAttachDirectory}
                   className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-xs text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm font-medium"
                 >
                   <HardDrive className="w-3.5 h-3.5" />
                   <span>关联本地文件夹</span>
                 </button>
-              )}
+              ) : null}
             </div>
           )}
         </div>
@@ -448,12 +475,31 @@ export function FileExplorerTabView({
 
             {/* 文件树列表 (图 2 样式) */}
             <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5 scrollbar-thin">
-              {localStatus !== "CONNECTED" ? (
+              {localStatus === "NEED_PERMISSION" ? (
                 <div className="h-full flex flex-col items-center justify-center p-4 text-center select-none">
-                  <div className="text-xs text-[#71717A] mb-3">目录树未连接</div>
+                  <div className="text-xs text-emerald-400 font-medium mb-1">
+                    已关联: {directoryName || currentProject?.folder_name || "本地目录"}
+                  </div>
+                  <div className="text-[11px] text-[#71717A] mb-3">需授权唤醒读取权限</div>
                   <button
                     type="button"
-                    onClick={attachDirectory}
+                    onClick={requestAccess}
+                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-xs text-white rounded-md transition-colors cursor-pointer font-medium"
+                  >
+                    唤醒授权
+                  </button>
+                </div>
+              ) : localStatus !== "CONNECTED" ? (
+                <div className="h-full flex flex-col items-center justify-center p-4 text-center select-none">
+                  <div className="text-xs text-[#71717A] mb-1">目录树未连接</div>
+                  {currentProject?.folder_name && (
+                    <div className="text-[11px] text-[#A1A1AA] mb-2 truncate max-w-[180px]">
+                      原关联: {currentProject.folder_name}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleAttachDirectory}
                     className="px-3 py-1 bg-white/[0.08] hover:bg-white/15 text-xs text-white rounded-md transition-colors cursor-pointer"
                   >
                     关联文件夹

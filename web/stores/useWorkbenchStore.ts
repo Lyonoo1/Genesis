@@ -213,19 +213,21 @@ export interface SessionWorkbenchData {
 }
 
 export function createDefaultSessionWorkbench(
-  prefix: string = "tab-new"
+  prefix: string = "tab-file"
 ): SessionWorkbenchData {
-  const newTabId = `${prefix}-${Date.now()}`;
+  const fileTabId = `${prefix}-${Date.now()}`;
   return {
     tabs: [
       {
-        id: newTabId,
-        kind: "new-tab",
-        title: "新标签页",
+        id: fileTabId,
+        kind: "file-explorer",
+        title: "文件",
+        selectedFilePath: null,
+        artifactId: null,
         closable: true,
       },
     ],
-    activeTabId: newTabId,
+    activeTabId: fileTabId,
     activeSection: "files",
     selectedFilePath: null,
     previewUrl: "genesis://newtab",
@@ -458,9 +460,30 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           if (activeSessionId === targetId && workbenchBySession[targetId]) {
             return;
           }
-          const existing =
+          let existing =
             workbenchBySession[targetId] ||
             createDefaultSessionWorkbench(targetId);
+          if (
+            existing.tabs.length === 1 &&
+            existing.tabs[0].kind === "new-tab"
+          ) {
+            const fileTabId = `tab-file-${Date.now()}`;
+            existing = {
+              ...existing,
+              tabs: [
+                {
+                  id: fileTabId,
+                  kind: "file-explorer",
+                  title: "文件",
+                  selectedFilePath: null,
+                  artifactId: null,
+                  closable: true,
+                },
+              ],
+              activeTabId: fileTabId,
+              activeSection: "files",
+            };
+          }
           set((state) => ({
             activeSessionId: targetId,
             workbenchBySession: {

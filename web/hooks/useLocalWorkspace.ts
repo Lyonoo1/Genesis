@@ -81,7 +81,7 @@ export function useLocalWorkspace(projectId: string | null) {
   }, [checkStatus]);
 
   // 2. 绑定或换电脑重新关联本地文件夹
-  const attachDirectory = async () => {
+  const attachDirectory = async (): Promise<FileSystemDirectoryHandle | null> => {
     if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
       if (typeof window !== "undefined" && !window.isSecureContext) {
         alert(
@@ -89,10 +89,10 @@ export function useLocalWorkspace(projectId: string | null) {
             window.location.origin +
             " 添加到白名单并设为 Enabled，点击 Relaunch 重启浏览器即可；\n3. 或者配置 HTTPS 域名直接访问。"
         );
-        return;
+        return null;
       }
       alert("当前浏览器不支持访问本地文件夹，请使用最新版 Chrome、Edge 或 Arc。");
-      return;
+      return null;
     }
 
     try {
@@ -121,18 +121,20 @@ export function useLocalWorkspace(projectId: string | null) {
       if (firstFile) {
         selectFile(firstFile.path, handle);
       }
+      return handle;
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         console.error("关联本地文件夹失败:", err);
       }
+      return null;
     }
   };
 
   // 3. 一键恢复授权（同设备刷新后）
-  const requestAccess = async () => {
+  const requestAccess = async (): Promise<boolean> => {
     if (!rootHandle) {
-      attachDirectory();
-      return;
+      const handle = await attachDirectory();
+      return !!handle;
     }
 
     try {
@@ -154,9 +156,12 @@ export function useLocalWorkspace(projectId: string | null) {
           const first = findFirstFile(tree);
           if (first) selectFile(first.path, rootHandle);
         }
+        return true;
       }
+      return false;
     } catch (err) {
       console.error("授权失败:", err);
+      return false;
     }
   };
 

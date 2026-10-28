@@ -44,6 +44,8 @@ export interface Project {
   name: string;
   icon?: string;
   description?: string;
+  folder_name?: string;
+  folder_path?: string;
   isExpanded?: boolean;
   is_archived?: boolean;
   created_at?: string;

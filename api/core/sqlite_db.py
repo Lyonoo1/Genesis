@@ -41,6 +41,8 @@ def init_sqlite_db() -> None:
                 name TEXT NOT NULL,
                 icon TEXT,
                 description TEXT,
+                folder_name TEXT,
+                folder_path TEXT,
                 is_expanded INTEGER NOT NULL DEFAULT 1,
                 is_archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
@@ -51,6 +53,14 @@ def init_sqlite_db() -> None:
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id, created_at DESC);"
         )
+
+        # 动态迁移：保证已存在数据库补齐 folder_name 与 folder_path 字段
+        cursor.execute("PRAGMA table_info(projects);")
+        existing_cols = [col["name"] for col in cursor.fetchall()]
+        if "folder_name" not in existing_cols:
+            cursor.execute("ALTER TABLE projects ADD COLUMN folder_name TEXT;")
+        if "folder_path" not in existing_cols:
+            cursor.execute("ALTER TABLE projects ADD COLUMN folder_path TEXT;")
 
         # 2. 会话表 (Sessions)
         cursor.execute(
@@ -241,6 +251,8 @@ def db_list_projects(user_id: str) -> list[dict[str, Any]]:
                 "name": r["name"],
                 "icon": r["icon"],
                 "description": r["description"],
+                "folder_name": r["folder_name"] if "folder_name" in r.keys() else None,
+                "folder_path": r["folder_path"] if "folder_path" in r.keys() else None,
                 "is_expanded": bool(r["is_expanded"]),
                 "is_archived": bool(r["is_archived"]),
                 "created_at": r["created_at"],
@@ -266,6 +278,8 @@ def db_get_project(user_id: str, project_id: str) -> Optional[dict[str, Any]]:
             "name": r["name"],
             "icon": r["icon"],
             "description": r["description"],
+            "folder_name": r["folder_name"] if "folder_name" in r.keys() else None,
+            "folder_path": r["folder_path"] if "folder_path" in r.keys() else None,
             "is_expanded": bool(r["is_expanded"]),
             "is_archived": bool(r["is_archived"]),
             "created_at": r["created_at"],
@@ -279,12 +293,14 @@ def db_upsert_project(data: dict[str, Any]) -> dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
         cursor.execute(
             """
-            INSERT INTO projects (id, user_id, name, icon, description, is_expanded, is_archived, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO projects (id, user_id, name, icon, description, folder_name, folder_path, is_expanded, is_archived, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = coalesce(excluded.name, projects.name),
                 icon = coalesce(excluded.icon, projects.icon),
                 description = coalesce(excluded.description, projects.description),
+                folder_name = coalesce(excluded.folder_name, projects.folder_name),
+                folder_path = coalesce(excluded.folder_path, projects.folder_path),
                 is_expanded = coalesce(excluded.is_expanded, projects.is_expanded),
                 is_archived = coalesce(excluded.is_archived, projects.is_archived),
                 updated_at = excluded.updated_at
@@ -295,6 +311,8 @@ def db_upsert_project(data: dict[str, Any]) -> dict[str, Any]:
                 data["name"],
                 data.get("icon"),
                 data.get("description"),
+                data.get("folder_name"),
+                data.get("folder_path"),
                 1 if data.get("is_expanded", True) else 0,
                 1 if data.get("is_archived", False) else 0,
                 data.get("created_at") or now,

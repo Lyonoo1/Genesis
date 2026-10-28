@@ -29,8 +29,19 @@ export interface QueuedSteeringItem {
   status: "queued" | "guided";
 }
 
+interface SessionStreamInfo {
+  isStreaming: boolean;
+  activeStreamingMessageId: string | null;
+  abortController: AbortController | null;
+}
+
 interface ChatState {
   messagesBySession: Record<string, Message[]>;
+  streamingSessions: Record<string, SessionStreamInfo>;
+  isStreamingForSession: (sessionId?: string | null) => boolean;
+  getActiveStreamingMessageId: (sessionId?: string | null) => string | null;
+
+  // 顶层全局兼容属性（便于非特定会话组件快速读取）
   isStreaming: boolean;
   activeStreamingMessageId: string | null;
   streamingSessionId: string | null;
@@ -92,8 +103,35 @@ function cleanupRunningSubagents(sessionId: string, targetStatus: "failed" | "co
   }
 }
 
+function computeStreamingState(
+  streamingSessions: Record<string, SessionStreamInfo>
+) {
+  const activeKeys = Object.keys(streamingSessions).filter(
+    (k) => streamingSessions[k]?.isStreaming
+  );
+  const isStreaming = activeKeys.length > 0;
+  const currentKey = activeKeys[0] || null;
+  const current = currentKey ? streamingSessions[currentKey] : null;
+  return {
+    streamingSessions,
+    isStreaming,
+    streamingSessionId: currentKey,
+    activeStreamingMessageId: current?.activeStreamingMessageId || null,
+    abortController: current?.abortController || null,
+  };
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   messagesBySession: INITIAL_DEMO_MESSAGES,
+  streamingSessions: {},
+  isStreamingForSession: (sessionId) => {
+    if (!sessionId) return get().isStreaming;
+    return !!get().streamingSessions[sessionId]?.isStreaming;
+  },
+  getActiveStreamingMessageId: (sessionId) => {
+    if (!sessionId) return get().activeStreamingMessageId;
+    return get().streamingSessions[sessionId]?.activeStreamingMessageId || null;
+  },
   isStreaming: false,
   activeStreamingMessageId: null,
   streamingSessionId: null,
@@ -181,6 +219,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   resetChatStore: () => {
     set({
       messagesBySession: {},
+      streamingSessions: {},
       steeringQueueBySession: {},
       isStreaming: false,
       activeStreamingMessageId: null,
@@ -226,9 +265,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     skillId?: string | null,
     parentId?: string | null
   ) => {
-    const { isStreaming, stopGeneration } = get();
-    if (isStreaming) {
-      await stopGeneration(sessionId);
+    const sessionStreaming = get().streamingSessions[sessionId]?.isStreaming;
+    if (sessionStreaming) {
+      await get().stopGeneration(sessionId);
     }
 
     const turnStartTime = Date.now();
@@ -260,19 +299,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
       created_at: new Date().toISOString(),
     };
 
-    const currentMessages = get().messagesBySession[sessionId] || [];
-    set((state) => ({
-      messagesBySession: {
-        ...state.messagesBySession,
-        [sessionId]: [...currentMessages, userMsg, aiMsg],
-      },
-      isStreaming: true,
-      activeStreamingMessageId: aiMsgId,
-      streamingSessionId: sessionId,
-    }));
-
     const controller = new AbortController();
-    set({ abortController: controller, pendingPermission: null });
+    const currentMessages = get().messagesBySession[sessionId] || [];
+    set((state) => {
+      const nextStreamingSessions = {
+        ...state.streamingSessions,
+        [sessionId]: {
+          isStreaming: true,
+          activeStreamingMessageId: aiMsgId,
+          abortController: controller,
+        },
+      };
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: [...currentMessages, userMsg, aiMsg],
+        },
+        ...computeStreamingState(nextStreamingSessions),
+        pendingPermission: null,
+      };
+    });
 
     const activeModel = useModelConfigStore.getState().getActiveModel();
 
@@ -756,6 +802,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
               set((state) => {
                 const list = state.messagesBySession[sessionId] || [];
+                const nextStreamingSessions = { ...state.streamingSessions };
+                delete nextStreamingSessions[sessionId];
                 return {
                   messagesBySession: {
                     ...state.messagesBySession,
@@ -777,11 +825,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         : m
                     ),
                   },
-                  isStreaming: false,
-                  activeStreamingMessageId: null,
-                  streamingSessionId: null,
-                  abortController: null,
-                  pendingPermission: null,
+                  ...computeStreamingState(nextStreamingSessions),
+                  pendingPermission: state.pendingPermission?.sessionId === sessionId ? null : state.pendingPermission,
                 };
               });
 
@@ -803,6 +848,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
               const data = msg.data;
               set((state) => {
                 const list = state.messagesBySession[sessionId] || [];
+                const nextStreamingSessions = { ...state.streamingSessions };
+                delete nextStreamingSessions[sessionId];
                 return {
                   messagesBySession: {
                     ...state.messagesBySession,
@@ -818,11 +865,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         : m
                     ),
                   },
-                  isStreaming: false,
-                  activeStreamingMessageId: null,
-                  streamingSessionId: null,
-                  abortController: null,
-                  pendingPermission: null,
+                  ...computeStreamingState(nextStreamingSessions),
+                  pendingPermission: state.pendingPermission?.sessionId === sessionId ? null : state.pendingPermission,
                 };
               });
               break;
@@ -892,15 +936,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
       }
     } finally {
-      if (get().abortController === controller) {
-        set({
-          isStreaming: false,
-          activeStreamingMessageId: null,
-          streamingSessionId: null,
-          abortController: null,
-          pendingPermission: null,
-        });
-      }
+      set((state) => {
+        const nextStreamingSessions = { ...state.streamingSessions };
+        delete nextStreamingSessions[sessionId];
+        return {
+          ...computeStreamingState(nextStreamingSessions),
+          pendingPermission: state.pendingPermission?.sessionId === sessionId ? null : state.pendingPermission,
+        };
+      });
     }
   },
 
@@ -951,9 +994,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   stopGeneration: async (sessionId: string) => {
-    const { abortController } = get();
-    if (abortController) {
-      abortController.abort();
+    const sessionStream = get().streamingSessions[sessionId];
+    if (sessionStream?.abortController) {
+      sessionStream.abortController.abort();
+    } else if (get().abortController && get().streamingSessionId === sessionId) {
+      get().abortController?.abort();
     }
     // 中止时将当前会话处于 running 的子代理立即置为 failed，防止停止后界面仍死循环转圈
     cleanupRunningSubagents(sessionId, "failed");
@@ -980,27 +1025,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ),
         };
       });
+      const nextStreamingSessions = { ...state.streamingSessions };
+      delete nextStreamingSessions[sessionId];
       return {
         messagesBySession: {
           ...state.messagesBySession,
           [sessionId]: updatedList,
         },
-        isStreaming: false,
-        activeStreamingMessageId: null,
-        streamingSessionId: null,
-        abortController: null,
-        pendingPermission: null,
+        ...computeStreamingState(nextStreamingSessions),
+        pendingPermission: state.pendingPermission?.sessionId === sessionId ? null : state.pendingPermission,
       };
     });
     await stopGenerationApi(sessionId);
   },
 
   switchSession: (newSessionId: string) => {
-    const { isStreaming, streamingSessionId, stopGeneration, fetchMessages } = get();
-    // 会话切换熔断保护：若用户切走正在推流的会话，立即熔断上一会话，杜绝串流
-    if (isStreaming && streamingSessionId && streamingSessionId !== newSessionId) {
-      stopGeneration(streamingSessionId);
-    }
+    const { fetchMessages } = get();
+    // 关键改造：切走正在推流的会话时，不再调用 stopGeneration！
+    // 允许上一会话继续在后台接收 SSE 流并写入 messagesBySession，实现完全多会话并发。
     if (newSessionId) {
       fetchMessages(newSessionId);
       useWorkbenchStore.getState().switchSessionWorkbench(newSessionId);
@@ -1010,7 +1052,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   fetchMessages: async (sessionId: string) => {
     if (!sessionId) return;
     // 若当前会话正在推流中，切勿打断或覆盖
-    if (get().isStreaming && get().streamingSessionId === sessionId) {
+    if (get().isStreamingForSession(sessionId)) {
       return;
     }
     try {

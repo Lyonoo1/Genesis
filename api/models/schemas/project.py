@@ -9,6 +9,8 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="项目名称")
     icon: Optional[str] = Field(default=None, description="图标标识")
     description: Optional[str] = Field(default=None, description="项目描述/备注")
+    folder_name: Optional[str] = Field(default=None, description="关联本地文件夹名称")
+    folder_path: Optional[str] = Field(default=None, description="可选本地物理工作区路径")
     id: Optional[str] = Field(default=None, description="可选客户端指定的 UUID")
 
 
@@ -20,6 +22,8 @@ class ProjectUpdate(BaseModel):
     )
     icon: Optional[str] = Field(default=None, description="图标标识")
     description: Optional[str] = Field(default=None, description="项目描述/备注")
+    folder_name: Optional[str] = Field(default=None, description="关联本地文件夹名称")
+    folder_path: Optional[str] = Field(default=None, description="可选本地物理工作区路径")
     is_expanded: Optional[bool] = Field(default=None, description="是否展开")
     is_archived: Optional[bool] = Field(default=None, description="是否归档")
 
@@ -34,6 +38,8 @@ class ProjectResponse(BaseModel):
     name: str
     icon: Optional[str] = None
     description: Optional[str] = None
+    folder_name: Optional[str] = None
+    folder_path: Optional[str] = None
     is_expanded: bool = True
     is_archived: bool = False
     created_at: Any

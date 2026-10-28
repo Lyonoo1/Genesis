@@ -10,6 +10,7 @@ import {
   ChevronDown,
   Check,
   AlertCircle,
+  HardDrive,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { ModelSelectorPopover } from "./ModelSelectorPopover";
@@ -18,6 +19,7 @@ import { SteeringQueueDrawer } from "./SteeringQueueDrawer";
 import { useChatStore } from "@/stores/useChatStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useModelConfigStore } from "@/stores/useModelConfigStore";
+import { useLocalWorkspace } from "@/hooks/useLocalWorkspace";
 
 interface ChatInputBarProps {
   sessionId?: string | null;
@@ -35,9 +37,14 @@ export function ChatInputBar({
   scrollbarWidth = 0,
 }: ChatInputBarProps) {
   const router = useRouter();
-  const { sendStreamMessage, enqueueSteering, stopGeneration, isStreaming } = useChatStore();
+  const isStreaming = useChatStore((s) => s.isStreamingForSession(sessionId));
+  const { sendStreamMessage, enqueueSteering, stopGeneration } = useChatStore();
   const {
     activeProjectId,
+    activeSessionId,
+    sessions,
+    projects,
+    updateProject,
     reasoningEffort,
     approvalMode,
     setApprovalMode,
@@ -45,6 +52,35 @@ export function ChatInputBar({
   } = useSessionStore();
   const { getActiveModel } = useModelConfigStore();
   const activeModel = getActiveModel();
+
+  const currentSession = (sessions || []).find(
+    (s) => s && s.id === (sessionId || activeSessionId)
+  );
+  const targetProjectId = currentSession?.project_id || activeProjectId || null;
+  const currentProject = targetProjectId
+    ? (projects || []).find((p) => p && p.id === targetProjectId)
+    : null;
+
+  const {
+    status: localStatus,
+    directoryName,
+    attachDirectory,
+    requestAccess,
+  } = useLocalWorkspace(targetProjectId);
+
+  // 项目下未关联文件夹校验逻辑：仅在明确属于某个项目时生效；独立对话（targetProjectId 为 null）不需要关联
+  const isProjectFolderMissing = Boolean(
+    targetProjectId &&
+      (!currentProject?.folder_name || localStatus === "DISCONNECTED_DEVICE")
+  );
+
+  const handlePickAndLinkFolder = async () => {
+    if (!targetProjectId) return;
+    const handle = await attachDirectory();
+    if (handle) {
+      await updateProject(targetProjectId, { folder_name: handle.name });
+    }
+  };
 
   const [text, setText] = useState(initialPrompt);
   const [isModelOpen, setIsModelOpen] = useState(false);
@@ -138,6 +174,22 @@ export function ChatInputBar({
 
     const trimmed = text.trim();
     if (!trimmed) return;
+
+    // 项目关联文件夹前置校验：如果属于项目且未关联文件夹，必须主动关联才能进行对话
+    if (targetProjectId) {
+      if (isProjectFolderMissing) {
+        const handle = await attachDirectory();
+        if (!handle) {
+          return; // 用户取消选择或失败，阻止发送
+        }
+        await updateProject(targetProjectId, { folder_name: handle.name });
+      } else if (localStatus === "NEED_PERMISSION") {
+        const granted = await requestAccess();
+        if (!granted) {
+          return; // 用户未授权访问，阻止发送
+        }
+      }
+    }
 
     // 运行中实时插话 (Mid-task Steering)：不中断当前任务，加入 Codex 悬浮排队托盘
     if (isStreaming) {
@@ -251,6 +303,31 @@ export function ChatInputBar({
               }}
             />
 
+            {/* 项目文件夹未关联或待授权提示条 */}
+            {targetProjectId && (isProjectFolderMissing || localStatus === "NEED_PERMISSION") && (
+              <div className="w-full mb-2.5 px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300 backdrop-blur-md shadow-lg animate-in fade-in slide-in-from-bottom-2 duration-200">
+                <div className="flex items-center gap-2 min-w-0 pr-2">
+                  <HardDrive className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span className="truncate">
+                    {localStatus === "NEED_PERMISSION"
+                      ? `项目「${currentProject?.name || "当前项目"}」已关联文件夹「${currentProject?.folder_name || directoryName}」，需授权访问方可对话`
+                      : `项目「${currentProject?.name || "当前项目"}」尚未关联本地文件夹，必须关联后方可对话`}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={
+                    localStatus === "NEED_PERMISSION"
+                      ? requestAccess
+                      : handlePickAndLinkFolder
+                  }
+                  className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-medium transition-colors cursor-pointer text-xs shrink-0 shadow-sm"
+                >
+                  {localStatus === "NEED_PERMISSION" ? "点击授权" : "立即关联文件夹"}
+                </button>
+              </div>
+            )}
+
             {/* 主输入卡片容器：截图同款 #2A2A2A 质感与圆角，无中部分割线 */}
             <div className="w-full rounded-[20px] border border-[#383838]/60 bg-[#2A2A2A] shadow-[0_12px_36px_rgba(0,0,0,0.55)] transition-all duration-200 focus-within:border-[#484848] focus-within:ring-1 focus-within:ring-white/[0.08] relative">
               {/* 运行中后台服务栏 (如有服务正在运行，贴合显示在输入框顶部) */}
@@ -278,6 +355,10 @@ export function ChatInputBar({
                 placeholder={
                   mounted && !isModelConfigured
                     ? "未配置模型，请点击右下角“未配置模型”完成配置"
+                    : targetProjectId && isProjectFolderMissing
+                    ? "当前项目未关联本地文件夹，关联后方可开始对话"
+                    : targetProjectId && localStatus === "NEED_PERMISSION"
+                    ? "请先点击上方授权访问关联文件夹后开始对话"
                     : isStreaming
                     ? "Agent 正在执行... 可输入排队消息（可在上方排队托盘随时点击“↳ 引导”立即抢占回答）"
                     : "随心输入"

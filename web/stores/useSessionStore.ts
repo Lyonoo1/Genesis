@@ -173,7 +173,7 @@ interface SessionState {
   confirmDelete: () => Promise<void>;
   resetSessionStore: () => void;
 
-  addProject: (name: string, description?: string, icon?: string) => Project;
+  addProject: (name: string, description?: string, icon?: string, folderName?: string) => Project;
   deleteProject: (projectId: string) => void;
   updateProject: (
     projectId: string,
@@ -181,6 +181,8 @@ interface SessionState {
       name?: string;
       icon?: string;
       description?: string;
+      folder_name?: string;
+      folder_path?: string;
       is_archived?: boolean;
       isExpanded?: boolean;
     }
@@ -272,7 +274,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
 
-  addProject: (name, description, icon) => {
+  addProject: (name, description, icon, folderName) => {
     const trimmed = name.trim() || "新项目";
     const id =
       typeof crypto !== "undefined" && crypto.randomUUID
@@ -283,6 +285,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       name: trimmed,
       icon,
       description,
+      folder_name: folderName,
       isExpanded: true,
       is_archived: false,
     };
@@ -293,7 +296,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 异步双写持久化：FastAPI 与 Supabase
     (async () => {
       try {
-        await createProjectApi({ id, name: trimmed, icon, description });
+        await createProjectApi({ id, name: trimmed, icon, description, folder_name: folderName });
       } catch (err) {
         console.warn("createProjectApi failed, falling back to Supabase direct:", err);
       }
@@ -310,6 +313,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           name: trimmed,
           icon: icon || null,
           description: description || null,
+          folder_name: folderName || null,
           is_expanded: true,
           is_archived: false,
         });
@@ -344,6 +348,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (updates.name !== undefined) dbUpdates.name = updates.name;
       if (updates.icon !== undefined) dbUpdates.icon = updates.icon;
       if (updates.description !== undefined) dbUpdates.description = updates.description;
+      if (updates.folder_name !== undefined) dbUpdates.folder_name = updates.folder_name;
+      if (updates.folder_path !== undefined) dbUpdates.folder_path = updates.folder_path;
       if (updates.is_archived !== undefined) dbUpdates.is_archived = updates.is_archived;
       if (updates.isExpanded !== undefined) dbUpdates.is_expanded = updates.isExpanded;
 
@@ -430,10 +436,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       const { useChatStore } = await import("@/stores/useChatStore");
       const chatState = useChatStore.getState();
-      const isActive = get().activeSessionId === id;
-      const shouldStop =
-        chatState.isStreaming &&
-        (chatState.streamingSessionId === id || isActive || !chatState.streamingSessionId);
+      const shouldStop = chatState.isStreamingForSession(id);
       if (shouldStop) {
         await chatState.stopGeneration(id);
       }

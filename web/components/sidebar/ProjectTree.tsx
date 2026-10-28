@@ -158,7 +158,7 @@ export function ProjectTree() {
       });
 
       const folderName = handle.name || "本地项目";
-      const newProj = addProject(folderName, undefined, "folder");
+      const newProj = addProject(folderName, undefined, "folder", folderName);
       if (newProj && newProj.id) {
         try {
           await saveDirectoryHandle(newProj.id, handle);
@@ -210,9 +210,7 @@ export function ProjectTree() {
 
   // 统一的归档会话处理函数（按需从 useChatStore.getState() 获取状态，解耦打字流式 Re-render）
   const handleArchiveSession = (session: Session) => {
-    const { isStreaming, streamingSessionId } = useChatStore.getState();
-    const isExecuting =
-      isStreaming && (streamingSessionId === session.id || activeSessionId === session.id);
+    const isExecuting = useChatStore.getState().isStreamingForSession(session.id);
     if (isExecuting) {
       openStopAndArchiveModal(session.id);
     } else {
@@ -453,11 +451,19 @@ export function ProjectTree() {
                       onClick={() => handleToggleProject(project)}
                       className="group/project relative flex items-center justify-between px-2.5 h-8 rounded-[8px] text-[13.5px] font-normal text-[#ECECED] hover:bg-white/[0.05] transition-colors cursor-pointer"
                     >
-                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                      <div className="flex items-center gap-2 min-w-0 pr-2">
                         {React.createElement(getProjectIconComponent(project.icon), {
                           className: "w-4 h-4 text-[#ECECED] stroke-[1.6] shrink-0",
                         })}
                         <span className="truncate">{project.name}</span>
+                        {project.folder_name && (
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono shrink-0 truncate max-w-[85px]"
+                            title={`已关联本地文件夹: ${project.folder_name}`}
+                          >
+                            {project.folder_name}
+                          </span>
+                        )}
                       </div>
 
                       {/* 右侧悬浮操作按钮组 */}

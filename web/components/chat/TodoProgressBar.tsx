@@ -27,7 +27,7 @@ function StatusIcon({ status, isStreaming }: { status: TodoItem["status"]; isStr
 export function TodoProgressBar({ sessionId }: TodoProgressBarProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const todos = useTodoStore((s) => s.todosBySession[sessionId]);
-  const isStreaming = useChatStore((s) => s.isStreaming);
+  const isStreaming = useChatStore((s) => s.isStreamingForSession(sessionId));
 
   if (!todos || todos.length === 0) return null;
 
