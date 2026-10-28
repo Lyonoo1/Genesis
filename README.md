@@ -4,6 +4,29 @@ Genesis 是面向专业工程师的高性能、可扩展 AI 智能体研发工�
 
 ---
 
+> [!IMPORTANT]
+> ### 🚨 必读前置配置：非 HTTPS（HTTP / IP 部署）环境下关联本地文件
+>
+> Genesis 依托原生 **File System Access API** 直接读写你电脑本地的项目代码。
+> 按照 W3C 与 Chromium（Chrome / Edge / Arc 等）浏览器底层安全规范，**读写本地文件系统的 API 强制要求在“安全上下文（Secure Context）”中运行**。
+>
+> 如果当前是通过 **HTTP 公网 IP**（如 `http://124.221.147.57/genesis`）访问，未启用 HTTPS 证书，浏览器出于防护策略会默认把本地文件系统 API 设为禁用，导致点击「关联文件夹」时弹窗提示不支持。
+>
+> **【必须执行，30 秒搞定】在 Chrome 中把你的访问地址加入安全白名单：**
+> 1. 在 Chrome 浏览器地址栏输入并回车：
+>    ```text
+>    chrome://flags/#unsafely-treat-insecure-origin-as-secure
+>    ```
+> 2. 找到高亮置顶的 **Insecure origins treated as secure**：
+>    * 在输入框填入你的访问源（例如：`http://124.221.147.57`，多个用英文逗号分隔）
+>    * 将右侧下拉菜单从 `Disabled` 改选为 **`Enabled`**
+> 3. 点击浏览器右下角弹出的 **Relaunch**（重启浏览器）。
+> 4. 再次打开 Genesis 页面，点击「关联文件夹」，浏览器原生的本地文件目录选择器即可正常唤起并读写！
+>
+> *(注：若后续为域名配置了正式 HTTPS 证书，如 `https://petpalapp.cn/genesis`，则天然满足安全上下文，无需任何浏览器配置)*
+
+---
+
 ## 目录
 
 - [核心能力与技术架构](#核心能力与技术架构)
