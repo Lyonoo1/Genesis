@@ -188,7 +188,7 @@ export function AssistantMessageItem({ message }: AssistantMessageItemProps) {
   return (
     <div className="my-6 space-y-2 select-text">
       {/* 1. 思考等待脉冲动效 (在尚未收到任何思考文字或正文前展示) */}
-      {isGeneratingWithoutContent && <ThinkingPulse />}
+      {isGeneratingWithoutContent && <ThinkingPulse createdAt={message.created_at} />}
 
       {/* 2. 深度思考折叠仓 (DeepSeek R1 / o1 思维链) */}
       {message.reasoning_content && (
@@ -197,6 +197,8 @@ export function AssistantMessageItem({ message }: AssistantMessageItemProps) {
           isStreaming={message.status === "streaming"}
           hasContent={!!message.content}
           hasTools={!!(message.raw_tool_calls && message.raw_tool_calls.length > 0)}
+          durationMs={message.metrics?.latency_ms}
+          createdAt={message.created_at}
         />
       )}
 
