@@ -43,7 +43,7 @@ class MessageRepository:
             return items, next_cursor, has_more
 
         # 若本地为空且有真实 Supabase 配置，尝试同步
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 query = (
                     self.client.table("messages")
@@ -108,7 +108,7 @@ class MessageRepository:
         saved = db_create_message(payload)
 
         # 尝试云端同步
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 self.client.table("messages").insert(payload).execute()
             except Exception:
@@ -129,7 +129,7 @@ class MessageRepository:
         pid = str(parent_id)
         pruned_count = db_prune_messages(session_id=sid, user_id=str(user_id), parent_id=pid)
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 parent_res = (
                     self.client.table("messages")

@@ -46,6 +46,18 @@ class Settings(BaseSettings):
         description="单机管理员访问密码（为空时默认允许首位用户或免密/默认密码进入）",
     )
 
+    @property
+    def has_active_supabase(self) -> bool:
+        """检查当前是否处于有效 Supabase 云端同步模式（单机模式或占位地址时直接短路）"""
+        if self.STANDALONE_MODE:
+            return False
+        if not self.SUPABASE_URL:
+            return False
+        lower_url = self.SUPABASE_URL.lower()
+        if "placeholder" in lower_url or "your-project" in lower_url or "127.0.0.1" in lower_url or "localhost" in lower_url:
+            return False
+        return True
+
     # LLM API Keys & Base URLs
     OPENAI_API_KEY: Optional[str] = Field(
         default=None, description="OpenAI API 密钥"

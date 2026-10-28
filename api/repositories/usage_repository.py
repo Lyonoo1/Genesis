@@ -48,7 +48,7 @@ class UsageRepository:
 
         db_insert_usage_log(payload)
 
-        if "placeholder" not in settings.SUPABASE_URL and self.client:
+        if settings.has_active_supabase and self.client:
             try:
                 self.client.table("usage_logs").insert(payload).execute()
             except Exception:
@@ -63,7 +63,7 @@ class UsageRepository:
         if logs:
             return logs
 
-        if "placeholder" not in settings.SUPABASE_URL and self.client:
+        if settings.has_active_supabase and self.client:
             try:
                 res = (
                     self.client.table("usage_logs")

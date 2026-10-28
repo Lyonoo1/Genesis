@@ -23,7 +23,7 @@ class SkillRepository:
 
     @property
     def client(self):
-        if self._client is None and "placeholder" not in settings.SUPABASE_URL:
+        if self._client is None and settings.has_active_supabase:
             try:
                 from core.database import get_supabase_client
                 self._client = get_supabase_client()

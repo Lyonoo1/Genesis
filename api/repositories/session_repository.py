@@ -37,7 +37,7 @@ class SessionRepository:
         if sessions:
             return sessions
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 res = (
                     self.client.table("sessions")
@@ -64,7 +64,7 @@ class SessionRepository:
         if sess:
             return sess
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 res = (
                     self.client.table("sessions")
@@ -110,7 +110,7 @@ class SessionRepository:
         }
         saved = db_upsert_session(payload)
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 self.client.table("sessions").insert(payload).execute()
             except Exception:
@@ -144,7 +144,7 @@ class SessionRepository:
 
         saved = db_upsert_session(sess)
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 update_data = {
                     "updated_at": now,
@@ -168,7 +168,7 @@ class SessionRepository:
         sid = str(session_id)
         db_delete_session(str(user_id), sid)
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 self.client.table("sessions").delete().eq("id", sid).eq("user_id", str(user_id)).execute()
             except Exception:
@@ -189,7 +189,7 @@ class SessionRepository:
                 status_code=404,
             )
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 res = (
                     self.client.table("session_capabilities")
@@ -231,7 +231,7 @@ class SessionRepository:
             for item in capabilities
         ]
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 res = (
                     self.client.table("session_capabilities")

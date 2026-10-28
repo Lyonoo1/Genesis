@@ -33,7 +33,7 @@ class ProjectRepository:
         if projects:
             return projects
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 res = (
                     self.client.table("projects")
@@ -58,7 +58,7 @@ class ProjectRepository:
         if proj:
             return proj
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 res = (
                     self.client.table("projects")
@@ -90,7 +90,7 @@ class ProjectRepository:
         }
         saved = db_upsert_project(payload)
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 self.client.table("projects").insert(payload).execute()
             except Exception:
@@ -123,7 +123,7 @@ class ProjectRepository:
         proj.update(update_data)
         saved = db_upsert_project(proj)
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 self.client.table("projects").update(update_data).eq("id", pid).eq("user_id", str(user_id)).execute()
             except Exception:
@@ -134,7 +134,7 @@ class ProjectRepository:
         pid = str(project_id)
         db_delete_project(str(user_id), pid)
 
-        if "placeholder" not in settings.SUPABASE_URL:
+        if settings.has_active_supabase:
             try:
                 self.client.table("projects").delete().eq("id", pid).eq(
                     "user_id", str(user_id)
