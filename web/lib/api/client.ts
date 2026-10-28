@@ -1,11 +1,16 @@
+export function getBasePath(): string {
+  return process.env.NEXT_PUBLIC_BASE_PATH || "/genesis";
+}
+
 export function getApiBaseUrl(): string {
   const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
   if (envUrl !== undefined && envUrl !== "") {
     return envUrl.replace(/\/+$/, "");
   }
+  const bp = getBasePath().replace(/\/+$/, "");
   if (typeof window !== "undefined") {
-    // 浏览器运行环境：未显式指定 API 地址时走同源相对路径（由 Nginx 统一反代 /api）
-    return "";
+    // 浏览器运行环境：默认带上二级目录前缀 (如 /genesis)
+    return bp;
   }
   return "http://localhost:8000";
 }
@@ -41,7 +46,7 @@ export async function apiFetch<T>(
       localStorage.removeItem("genesis_auth_token");
       document.cookie =
         "genesis_auth_token=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
-      window.location.href = "/login";
+      window.location.href = `${getBasePath()}/login`;
       // 抛出错误阻止后续代码执行
       throw new Error("Session expired");
     }

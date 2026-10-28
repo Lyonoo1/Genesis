@@ -56,25 +56,23 @@ export async function restartTerminalSession(
 
 export function getTerminalWsUrl(sessionId: string): string {
   const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-  let base = envUrl;
-  if (!base && typeof window !== "undefined") {
+  const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "/genesis").replace(/\/+$/, "");
+  let base = envUrl !== undefined && envUrl !== "" ? envUrl : basePath;
+
+  if (typeof window !== "undefined") {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    base = `${protocol}//${window.location.host}`;
-  } else if (!base) {
-    base = "ws://localhost:8000";
-  } else {
-    base = base.replace(/^http(s)?:/, (match) =>
-      match === "https:" ? "wss:" : "ws:"
-    );
-    if (base.startsWith("/")) {
-      if (typeof window !== "undefined") {
-        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        base = `${protocol}//${window.location.host}${base}`;
-      } else {
-        base = `ws://localhost:8000${base}`;
-      }
+    if (base.startsWith("http://") || base.startsWith("https://")) {
+      base = base.replace(/^http(s)?:/, (match) =>
+        match === "https:" ? "wss:" : "ws:"
+      );
+    } else {
+      const prefix = base.startsWith("/") ? base : `/${base}`;
+      base = `${protocol}//${window.location.host}${prefix}`;
     }
+  } else {
+    base = "ws://localhost:8000";
   }
+
   base = base.replace(/\/+$/, "");
   return `${base}/api/terminal/ws/${encodeURIComponent(sessionId)}`;
 }

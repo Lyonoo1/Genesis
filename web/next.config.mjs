@@ -1,5 +1,9 @@
 /** @type {import('next').NextConfig} */
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/genesis";
+
 const nextConfig = {
+  basePath,
+  assetPrefix: basePath,
   eslint: {
     ignoreDuringBuilds: true,
   },

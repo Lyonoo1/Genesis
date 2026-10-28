@@ -86,16 +86,17 @@ export async function middleware(request: NextRequest) {
   // 3. 已登录用户访问 /login 或 /register 时，直接重定向回工作区主页
   if (isAuthRoute) {
     if (isValidToken) {
-      return applySecurityHeaders(
-        NextResponse.redirect(new URL("/", request.url))
-      );
+      const homeUrl = request.nextUrl.clone();
+      homeUrl.pathname = "/";
+      return applySecurityHeaders(NextResponse.redirect(homeUrl));
     }
     return applySecurityHeaders(NextResponse.next());
   }
 
   // 4. 受保护路由拦截：未登录或 Token 失效，强制重定向至 /login
   if (!isValidToken) {
-    const loginUrl = new URL("/login", request.url);
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
     if (pathname !== "/") {
       loginUrl.searchParams.set("redirect", pathname);
     }

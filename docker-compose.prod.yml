@@ -27,13 +27,15 @@ services:
       context: ./web
       dockerfile: Dockerfile
       args:
-        - NEXT_PUBLIC_API_BASE_URL=
+        - NEXT_PUBLIC_API_BASE_URL=/genesis
+        - NEXT_PUBLIC_BASE_PATH=/genesis
     container_name: genesis-web
     restart: always
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - NEXT_PUBLIC_API_BASE_URL=
+      - NEXT_PUBLIC_API_BASE_URL=/genesis
+      - NEXT_PUBLIC_BASE_PATH=/genesis
     depends_on:
       - api
     expose:

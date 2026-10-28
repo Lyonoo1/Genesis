@@ -246,8 +246,12 @@ function LoginForm() {
           avatarText: displayName.slice(0, 2).toUpperCase(),
         });
 
-        // 3. 读取目标重定向 URL (支持被拦截页面原路返回)
-        const redirectTarget = searchParams.get("redirect") || "/";
+        // 3. 读取目标重定向 URL (支持被拦截页面原路返回，带上 basePath 前缀)
+        const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "/genesis").replace(/\/+$/, "");
+        const rawTarget = searchParams.get("redirect") || "/";
+        const redirectTarget = rawTarget.startsWith(basePath)
+          ? rawTarget
+          : `${basePath}${rawTarget.startsWith("/") ? rawTarget : `/${rawTarget}`}`;
         window.location.href = redirectTarget;
         return;
       }
