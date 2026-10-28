@@ -98,7 +98,11 @@ async def login(req: LoginRequest):
     if not user or not _verify_password(password, user["password_hash"]):
         # 兼容内置开发默认账号
         if account in ("developer", "admin", "lyon") and password in ("developer", "admin", "123456", "genesis"):
-            user_id = "00000000-0000-0000-0000-000000000001"
+            user_id = (
+                "5679628d-3646-476c-b3e3-9c4873514244"
+                if account == "admin"
+                else "00000000-0000-0000-0000-000000000001"
+            )
             email = f"{account}@genesis.local"
             token = _create_jwt(user_id, email, account)
             return {

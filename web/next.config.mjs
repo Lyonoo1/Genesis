@@ -7,6 +7,20 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  async redirects() {
+    return [
+      ...(basePath
+        ? [
+            {
+              source: "/",
+              destination: basePath,
+              basePath: false,
+              permanent: false,
+            },
+          ]
+        : []),
+    ];
+  },
   async rewrites() {
     const internalApi = process.env.INTERNAL_API_URL || "http://localhost:8000";
     return [
