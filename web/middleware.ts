@@ -57,8 +57,9 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const token = request.cookies.get("genesis_auth_token")?.value;
 
-  // 1. 公开路径白名单：登录、静态资源直接放行
+  // 1. 公开路径白名单：登录、API 接口、静态资源直接放行
   const isAuthRoute = pathname.startsWith("/login") || pathname.startsWith("/register");
+  const isApiRoute = pathname.startsWith("/api");
   const isStaticAsset =
     pathname.startsWith("/_next") ||
     pathname.includes(".") ||
@@ -76,8 +77,8 @@ export async function middleware(request: NextRequest) {
     return res;
   };
 
-  // 静态资源直接放行（不加安全头，性能优先）
-  if (isStaticAsset) {
+  // 静态资源与 API 接口直接放行（不拦截 POST 请求）
+  if (isStaticAsset || isApiRoute) {
     return NextResponse.next();
   }
 
