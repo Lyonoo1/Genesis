@@ -27,37 +27,11 @@ $SUDO mkdir -p "${BACKUP_DIR}"
 $SUDO cp -r /etc/nginx/ "${BACKUP_DIR}/"
 log_info "备份完成！如果后续需要回滚，可随时执行恢复。"
 
-# 2. 定位包含 petpalapp.cn 或默认配置的 server 块文件
-TARGET_CONF=""
-for f in $(grep -rl "server_name.*petpalapp.cn" /etc/nginx/ 2>/dev/null); do
-    if [ -f "$f" ]; then
-        TARGET_CONF="$f"
-        break
-    fi
-done
+# 2. 定位正在生效的站点配置文件 (必须在 sites-enabled 或 conf.d 下，避开 .bak 备份文件)
+$SUDO python3 -c '
+import glob, re, sys
 
-if [ -z "$TARGET_CONF" ]; then
-    if [ -f /etc/nginx/sites-available/default ]; then
-        TARGET_CONF="/etc/nginx/sites-available/default"
-    elif [ -f /etc/nginx/conf.d/default.conf ]; then
-        TARGET_CONF="/etc/nginx/conf.d/default.conf"
-    fi
-fi
-
-if [ -z "$TARGET_CONF" ]; then
-    log_error "未找到现有 Nginx 站点配置文件，请手动确认 /etc/nginx 路径！"
-    exit 1
-fi
-
-log_info "2. 检测到宿主机 Nginx 配置文件: ${TARGET_CONF}"
-
-# 3. 检查是否已经配置过 /genesis
-if grep -q "location /genesis/" "$TARGET_CONF"; then
-    log_warn "检测到 ${TARGET_CONF} 中已有 /genesis 路由配置，跳过重复写入。"
-else
-    log_info "3. 正在向 ${TARGET_CONF} 安全注入 /genesis 反向代理路由..."
-    
-    SNIPPET='
+snippet = """
     # ==========================================
     # Genesis AI 智能体工作台专属路由 (独立隔离)
     # ==========================================
@@ -79,28 +53,57 @@ else
     location = /genesis {
         return 301 /genesis/;
     }
+"""
+
+def insert_into_servers(content, snippet):
+    result = []
+    i = 0
+    n = len(content)
+    while i < n:
+        m = re.search(r"server\s*\{", content[i:])
+        if not m:
+            result.append(content[i:])
+            break
+        brace_start = i + m.end() - 1
+        result.append(content[i:brace_start + 1])
+        depth = 1
+        j = brace_start + 1
+        while j < n and depth > 0:
+            if content[j] == "{":
+                depth += 1
+            elif content[j] == "}":
+                depth -= 1
+            j += 1
+        server_body = content[brace_start + 1 : j - 1]
+        if "location /genesis/" not in server_body:
+            server_body = server_body + "\n" + snippet + "\n"
+        result.append(server_body)
+        result.append("}")
+        i = j
+    return "".join(result)
+
+patterns = ["/etc/nginx/sites-enabled/*", "/etc/nginx/conf.d/*.conf"]
+target_files = []
+for p in patterns:
+    for f in glob.glob(p):
+        if not re.search(r"\.(bak|old|swp|dpkg-.*)$", f):
+            target_files.append(f)
+
+if not target_files:
+    print("NO_FILES_FOUND")
+    sys.exit(0)
+
+for f in target_files:
+    with open(f, "r", encoding="utf-8") as fp:
+        orig = fp.read()
+    patched = insert_into_servers(orig, snippet)
+    if patched != orig:
+        with open(f, "w", encoding="utf-8") as fp:
+            fp.write(patched)
+        print(f"成功注入 /genesis 路由至激活配置: {f}")
+    else:
+        print(f"配置已包含 /genesis 路由，无需改动: {f}")
 '
-
-    # 使用 python 安全地在最后一个 server 块大括号前插入
-    $SUDO python3 -c '
-import sys
-
-conf_path = sys.argv[1]
-snippet = sys.argv[2]
-
-with open(conf_path, "r", encoding="utf-8") as f:
-    content = f.read()
-
-last_brace = content.rfind("}")
-if last_brace != -1:
-    new_content = content[:last_brace] + snippet + "\n" + content[last_brace:]
-    with open(conf_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    print("SUCCESS")
-else:
-    print("NO_BRACE")
-' "$TARGET_CONF" "$SNIPPET"
-fi
 
 # 4. 测试语法并热重载
 log_info "4. 校验 Nginx 配置语法..."
