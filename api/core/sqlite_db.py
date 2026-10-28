@@ -1,9 +1,10 @@
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 DB_PATH = Path(
     os.environ.get(
@@ -13,18 +14,23 @@ DB_PATH = Path(
 )
 
 
-def get_db_connection() -> sqlite3.Connection:
+@contextmanager
+def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
+    """受控 SQLite 数据库连接上下文管理器：保证任何时候退出均显式 close() 释放锁与文件句柄"""
     conn = sqlite3.connect(str(DB_PATH), timeout=30.0, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn.execute("PRAGMA busy_timeout=15000;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def init_sqlite_db() -> None:
     """初始化 Genesis 本地持久化 SQLite 数据库体系"""
     with get_db_connection() as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         # 1. 项目表 (Projects)
         cursor.execute(
