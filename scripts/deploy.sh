@@ -107,13 +107,24 @@ else
     echo "ENVIRONMENT=production" >> "${ROOT_DIR}/api/.env"
 fi
 
+# 3.1 端口检测：检查宿主机是否已有原生 Nginx 占用 80 端口
+TARGET_PORT="${GENESIS_PORT:-80}"
+if [ -z "$GENESIS_PORT" ]; then
+    if ss -lntp 2>/dev/null | grep -q ':80 ' || netstat -lntp 2>/dev/null | grep -q ':80 '; then
+        log_warn "检测到宿主机 80 端口已有服务（如系统原生 Nginx）在监听！"
+        log_info "为防端口冲突，Genesis 自动映射至端口 8888 (支持由宿主机 Nginx 转发并复用 SSL 证书)"
+        TARGET_PORT=8888
+        export GENESIS_PORT=8888
+    fi
+fi
+
 # 4. 执行全量容器构建与无缝拉起
 DOCKER_COMPOSE="docker compose"
 if ! docker ps >/dev/null 2>&1; then
     DOCKER_COMPOSE="$SUDO docker compose"
 fi
 
-log_info "开始构建生产镜像并启动编排容器..."
+log_info "开始构建生产镜像并启动编排容器 (监听端口: ${TARGET_PORT})..."
 $DOCKER_COMPOSE -f docker-compose.prod.yml down --remove-orphans || true
 $DOCKER_COMPOSE -f docker-compose.prod.yml up --build -d
 
@@ -122,7 +133,7 @@ log_info "等待服务就绪 (最大等待 30 秒)..."
 READY=0
 for i in {1..15}; do
     sleep 2
-    if curl -s http://127.0.0.1/api/health | grep -q "genesis-core-api"; then
+    if curl -s "http://127.0.0.1:${TARGET_PORT}/api/health" | grep -q "genesis-core-api"; then
         READY=1
         break
     fi
@@ -134,12 +145,17 @@ if [ $READY -eq 1 ]; then
     PUBLIC_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
     log_info "🎉 Genesis 生产服务部署成功！"
     echo -e "${CYAN}======================================================${NC}"
-    echo -e "访问控制台:  http://${PUBLIC_IP}"
-    echo -e "后端健康接口: http://${PUBLIC_IP}/api/health"
+    if [ "$TARGET_PORT" = "80" ]; then
+        echo -e "访问控制台:   http://${PUBLIC_IP}"
+        echo -e "域名访问:     http://petpalapp.cn"
+    else
+        echo -e "本地服务地址: http://127.0.0.1:${TARGET_PORT}"
+        echo -e "说明: 宿主机已有原生 Nginx 占用 80 端口，可通过宿主机 Nginx 配置反代！"
+    fi
+    echo -e "后端健康接口: http://127.0.0.1:${TARGET_PORT}/api/health"
     echo -e "容器状态查看: docker compose -f docker-compose.prod.yml ps"
     echo -e "实时日志追踪: make prod-logs"
     echo -e "${CYAN}======================================================${NC}"
-    log_info "注意：请确保腾讯云 Lighthouse 控制台已放通 80 端口防火墙规则！"
 else
     log_error "健康检查未通过，正在输出近期容器日志排查："
     $DOCKER_COMPOSE -f docker-compose.prod.yml logs --tail=50

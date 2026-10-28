@@ -65,10 +65,16 @@ if is_dev:
     app.include_router(db_viewer_router)
 
 
-# CORS 配置
+# CORS 配置 (允许本地开发、服务器 IP 以及 petpalapp.cn 域名与任意子域)
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://124.221.147.57",
+    "https://124.221.147.57",
+    "http://petpalapp.cn",
+    "https://petpalapp.cn",
+    "http://www.petpalapp.cn",
+    "https://www.petpalapp.cn",
 ]
 if settings.FRONTEND_URL and settings.FRONTEND_URL not in origins:
     origins.append(settings.FRONTEND_URL)
@@ -76,7 +82,7 @@ if settings.FRONTEND_URL and settings.FRONTEND_URL not in origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$" if is_dev else None,
+    allow_origin_regex=r"^https?://([a-zA-Z0-9-]+\.)*petpalapp\.cn(:\d+)?$|^https?://124\.221\.147\.57(:\d+)?$|^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

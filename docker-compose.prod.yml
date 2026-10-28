@@ -11,6 +11,7 @@ services:
     environment:
       - ENVIRONMENT=production
       - PORT=8000
+      - FRONTEND_URL=https://petpalapp.cn
       - SQLITE_DB_PATH=/data/genesis.db
       - SANDBOX_TMP_DIR=/tmp/genesis/sandboxes
     volumes:
@@ -45,7 +46,7 @@ services:
     container_name: genesis-nginx
     restart: always
     ports:
-      - "80:80"
+      - "${GENESIS_PORT:-80}:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
