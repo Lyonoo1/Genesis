@@ -34,6 +34,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      - INTERNAL_API_URL=http://api:8000
       - NEXT_PUBLIC_API_BASE_URL=/genesis
       - NEXT_PUBLIC_BASE_PATH=/genesis
     depends_on:
