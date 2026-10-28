@@ -235,17 +235,53 @@ make test-web   # 运行 Next.js ESLint 与 TypeScript 静态检查
 
 ### Genesis Local Bridge 接入本地项目
 
-若你的 Genesis 部署在云端服务器，而你想让 Agent 操作你本地电脑上的项目目录：
+若你的 Genesis 部署在云端服务器，而你想让 Agent 直接读写、检索与运行你本地 Mac/PC 电脑上的项目代码（无需公网 IP 与端口映射）：
 
-1. 登录 Genesis 前端，在「设置」页面复制你的登录 **JWT Token**。
-2. 在本地电脑的项目目录下执行：
-   ```bash
-   node /path/to/Genesis/scripts/genesis-bridge.mjs \
-     --server https://your-genesis-domain.com \
-     --token <YOUR_JWT_TOKEN> \
-     --dir .
-   ```
-3. 终端显示 `Genesis 云端网关已成功建立本地 Bridge 隧道连接` 后，云端智能体即可直接感知并安全操作你当前的物理工作区。
+#### 1. 获取你的登录 Token (JWT)
+* **方式 A（网页设置页）**：在 Genesis 顶部导航或设置页点击「本地 Bridge」，直接一键复制 Token 与预拼装指令。
+* **方式 B（浏览器控制台）**：在已登录的 Genesis 网页按 `F12` 打开控制台，输入并回车：
+  ```javascript
+  copy(localStorage.getItem("genesis_auth_token"))
+  ```
+  即可直接复制 Token 到系统剪贴板。
+
+#### 2. 在本地终端启动 Bridge 客户端
+根据你当前终端所在的目录路径选择执行：
+
+* **如果终端位于父目录（如 `/Users/lyon/Desktop/agentProject`）**：
+  ```bash
+  node Genesis/scripts/genesis-bridge.mjs \
+    --server http://124.221.147.57/genesis \
+    --token <YOUR_JWT_TOKEN> \
+    --dir "/Users/lyon/Desktop/你的项目目录"
+  ```
+
+* **如果终端位于 `Genesis` 仓库内**：
+  ```bash
+  node scripts/genesis-bridge.mjs \
+    --server http://124.221.147.57/genesis \
+    --token <YOUR_JWT_TOKEN> \
+    --dir "/Users/lyon/Desktop/你的项目目录"
+  ```
+
+> [!TIP]
+> **Token 记忆免重复传参**：`--token` 仅需在首次启动时传入一次，客户端会自动加密保存在 `~/.genesis/bridge_token`。后续在项目目录下只需运行 `node Genesis/scripts/genesis-bridge.mjs` 即可秒级重连！
+
+#### 3. 连通效果
+终端回显如下信息即表示建立隧道成功：
+```text
+⚡ 正在连接 Genesis 云端网关...
+  - 目标地址: http://124.221.147.57/genesis
+  - 本地工作区: /Users/lyon/Desktop/你的项目目录
+
+✔ 物理连接握手成功，正在注册本地节点元数据...
+✔ 隧道已就绪！云端 Agent 现在可以实时编辑与操作你的本地代码。
+  工作区挂载目录: /Users/lyon/Desktop/你的项目目录
+  保持当前终端运行，按 Ctrl+C 可断开。
+```
+此时回到网页端刷新：
+* **右侧工作台（Workbench）**：文件树直接透传加载本地项目目录，点击任意文件即刻在编辑器中打开与保存。
+* **主 Agent & 独立子代理**：所有文件读写、修改、行级差异替换、目录检索与本地命令执行（`npm test`、`git diff` 等）全权路由至本地执行，完全突破云端容器文件物理隔绝限制。
 
 ### Docker 容器化与生产部署
 
