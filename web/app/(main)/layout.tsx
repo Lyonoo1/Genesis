@@ -9,7 +9,7 @@ import { useUIStore } from "@/stores/useUIStore";
 import { useWorkbenchStore } from "@/stores/useWorkbenchStore";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { RightSidebar } from "@/components/inspector/RightSidebar";
-import { getBasePath, getAuthToken } from "@/lib/api/client";
+import { getBasePath, getAuthToken, getApiBaseUrl } from "@/lib/api/client";
 
 
 export default function MainLayout({
@@ -48,16 +48,48 @@ export default function MainLayout({
     useWorkbenchStore.getState().switchSessionWorkbench(currentSessionId);
   }, [currentSessionId]);
 
-  // 登录态前置校验 (杜绝未登录用户看到工作台闪烁)
+  // 登录态前置校验 (杜绝未登录用户看到工作台闪烁；桌面端自动静默免密登录)
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
 
   useEffect(() => {
-    const token = getAuthToken();
-    if (!token) {
-      window.location.href = `${getBasePath()}/login`;
-      return;
-    }
-    setIsAuthorized(true);
+    const initAuth = async () => {
+      let token = getAuthToken();
+      const isDesktopEnv =
+        typeof window !== "undefined" &&
+        (Boolean((window as any).electronAPI?.isDesktop) ||
+          process.env.NEXT_PUBLIC_BASE_PATH === "");
+
+      // 桌面端本地伴生模式：无 Token 时自动发起静默免密登录
+      if (!token && isDesktopEnv) {
+        try {
+          const res = await fetch(`${getApiBaseUrl()}/api/auth/silent-login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.access_token) {
+              localStorage.setItem("genesis_auth_token", data.access_token);
+              const maxAge = data.expires_in || 2592000;
+              document.cookie = `genesis_auth_token=${encodeURIComponent(
+                data.access_token
+              )}; path=/; max-age=${maxAge}; SameSite=Lax;`;
+              token = data.access_token;
+            }
+          }
+        } catch (e) {
+          console.warn("Desktop silent login failed:", e);
+        }
+      }
+
+      if (!token) {
+        window.location.href = `${getBasePath()}/login`;
+        return;
+      }
+      setIsAuthorized(true);
+    };
+
+    initAuth();
   }, []);
 
   // 保持滑动无感续期与多账号切换数据隔离，并监听跨 Tab 登出广播

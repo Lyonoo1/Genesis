@@ -56,7 +56,11 @@ export async function restartTerminalSession(
 
 export function getTerminalWsUrl(sessionId: string): string {
   const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
-  const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "/genesis").replace(/\/+$/, "");
+  const rawBasePath =
+    process.env.NEXT_PUBLIC_BASE_PATH !== undefined
+      ? process.env.NEXT_PUBLIC_BASE_PATH
+      : "/genesis";
+  const basePath = rawBasePath.replace(/\/+$/, "");
   let base = envUrl !== undefined && envUrl !== "" ? envUrl : basePath;
 
   if (typeof window !== "undefined") {
@@ -66,7 +70,7 @@ export function getTerminalWsUrl(sessionId: string): string {
         match === "https:" ? "wss:" : "ws:"
       );
     } else {
-      const prefix = base.startsWith("/") ? base : `/${base}`;
+      const prefix = base ? (base.startsWith("/") ? base : `/${base}`) : "";
       base = `${protocol}//${window.location.host}${prefix}`;
     }
   } else {

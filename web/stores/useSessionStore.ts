@@ -173,7 +173,13 @@ interface SessionState {
   confirmDelete: () => Promise<void>;
   resetSessionStore: () => void;
 
-  addProject: (name: string, description?: string, icon?: string, folderName?: string) => Project;
+  addProject: (
+    name: string,
+    description?: string,
+    icon?: string,
+    folderName?: string,
+    folderPath?: string
+  ) => Project;
   deleteProject: (projectId: string) => void;
   updateProject: (
     projectId: string,
@@ -274,8 +280,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
 
-  addProject: (name, description, icon, folderName) => {
+  addProject: (name, description, icon, folderName, folderPath) => {
     const trimmed = name.trim() || "新项目";
+
+    // 防重校验：若已存在相同本地路径的项目，直接复用激活现有项目，避免重复创建
+    if (folderPath) {
+      const existing = get().projects.find(
+        (p) => !p.is_archived && p.folder_path && p.folder_path === folderPath
+      );
+      if (existing) {
+        set({ activeProjectId: existing.id });
+        return existing;
+      }
+    }
+
     const id =
       typeof crypto !== "undefined" && crypto.randomUUID
         ? crypto.randomUUID()
@@ -286,6 +304,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       icon,
       description,
       folder_name: folderName,
+      folder_path: folderPath,
       isExpanded: true,
       is_archived: false,
     };
@@ -296,7 +315,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 异步双写持久化：FastAPI 与 Supabase
     (async () => {
       try {
-        await createProjectApi({ id, name: trimmed, icon, description, folder_name: folderName });
+        await createProjectApi({
+          id,
+          name: trimmed,
+          icon,
+          description,
+          folder_name: folderName,
+          folder_path: folderPath,
+        });
       } catch (err) {
         console.warn("createProjectApi failed, falling back to Supabase direct:", err);
       }
@@ -314,6 +340,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           icon: icon || null,
           description: description || null,
           folder_name: folderName || null,
+          folder_path: folderPath || null,
           is_expanded: true,
           is_archived: false,
         });

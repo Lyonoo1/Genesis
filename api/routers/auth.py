@@ -63,6 +63,31 @@ def _create_jwt(user_id: str, email: Optional[str], username: str) -> str:
     return jwt.encode(payload, settings.JWT_SECRET, algorithm="HS256")
 
 
+@router.post("/silent-login", summary="单机/桌面端静默免密登录")
+async def silent_login():
+    """桌面端本地伴生模式下自动静默登录，无需用户手动输入密码"""
+    user_id = "00000000-0000-0000-0000-000000000001"
+    account = "developer"
+    email = "developer@genesis.local"
+    user = db_get_user_by_account(account)
+    if not user:
+        hashed = _hash_password("developer")
+        user = db_create_user(user_id, account, email, hashed)
+
+    token = _create_jwt(user_id, email, account)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": 60 * 60 * 24 * 30,
+        "user": {
+            "id": user_id,
+            "email": email,
+            "name": account,
+            "username": account,
+        },
+    }
+
+
 @router.post("/login", summary="单机用户登录")
 async def login(req: LoginRequest):
     account = req.account.strip()

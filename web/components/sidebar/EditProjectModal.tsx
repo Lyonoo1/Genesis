@@ -26,6 +26,7 @@ import {
   saveDirectoryHandle,
   getDirectoryHandle,
 } from "@/lib/workspace/localWorkspaceManager";
+import { pickFolder } from "@/lib/workspace/pickFolder";
 
 const PRESET_ICONS = [
   { id: "folder", label: "文件夹", Icon: Folder },
@@ -72,6 +73,7 @@ export function EditProjectModal({
   const [selectedFolderHandle, setSelectedFolderHandle] =
     useState<FileSystemDirectoryHandle | null>(null);
   const [selectedFolderName, setSelectedFolderName] = useState<string>("");
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string>("");
 
   const isCreate = mode === "create" || !project;
 
@@ -85,6 +87,11 @@ export function EditProjectModal({
         if (project.folder_name) {
           setSelectedFolderName(project.folder_name);
         }
+        if (project.folder_path) {
+          setSelectedFolderPath(project.folder_path);
+        } else {
+          setSelectedFolderPath("");
+        }
         getDirectoryHandle(project.id).then((handle) => {
           if (handle) {
             setSelectedFolderHandle(handle);
@@ -93,7 +100,6 @@ export function EditProjectModal({
             setSelectedFolderName(project.folder_name);
           } else {
             setSelectedFolderHandle(null);
-            setSelectedFolderName("");
           }
         });
       } else {
@@ -103,6 +109,7 @@ export function EditProjectModal({
         setIsArchived(false);
         setSelectedFolderHandle(null);
         setSelectedFolderName("");
+        setSelectedFolderPath("");
       }
     }
   }, [isOpen, project, isCreate]);
@@ -114,37 +121,17 @@ export function EditProjectModal({
     : [];
 
   const handlePickFolder = async () => {
-    if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
-      if (typeof window !== "undefined" && !window.isSecureContext) {
-        alert(
-          "受浏览器安全策略限制：在非 HTTPS（HTTP IP）环境下，浏览器默认禁用本地文件访问功能。\n\n解决办法：\n1. 访问 chrome://flags/#unsafely-treat-insecure-origin-as-secure\n2. 将 " +
-            window.location.origin +
-            " 添加到白名单并设为 Enabled，点击 Relaunch 重启浏览器即可；\n3. 或者配置 HTTPS 域名直接访问。"
-        );
-        return;
-      }
-      alert("当前浏览器不支持访问本地文件夹，请使用 Chrome/Edge/Arc。");
-      return;
+    const res = await pickFolder();
+    if (!res) return;
+    setSelectedFolderName(res.name);
+    if (res.path) {
+      setSelectedFolderPath(res.path);
     }
-    try {
-      const handle: FileSystemDirectoryHandle = await (
-        window as Window & {
-          showDirectoryPicker: (opts?: {
-            mode?: string;
-          }) => Promise<FileSystemDirectoryHandle>;
-        }
-      ).showDirectoryPicker({
-        mode: "readwrite",
-      });
-      if (handle) {
-        setSelectedFolderHandle(handle);
-        setSelectedFolderName(handle.name);
-        if (!name.trim()) {
-          setName(handle.name);
-        }
-      }
-    } catch {
-      // ignore abort
+    if (res.handle) {
+      setSelectedFolderHandle(res.handle);
+    }
+    if (!name.trim()) {
+      setName(res.name);
     }
   };
 
@@ -156,8 +143,9 @@ export function EditProjectModal({
     setLoading(true);
     try {
       const folderName = selectedFolderName || selectedFolderHandle?.name || undefined;
+      const folderPath = selectedFolderPath || undefined;
       if (isCreate) {
-        const newProj = addProject(trimmed, description.trim() || undefined, icon, folderName);
+        const newProj = addProject(trimmed, description.trim() || undefined, icon, folderName, folderPath);
         if (selectedFolderHandle && newProj?.id) {
           try {
             await saveDirectoryHandle(newProj.id, selectedFolderHandle);
@@ -171,6 +159,7 @@ export function EditProjectModal({
           icon,
           description: description.trim() || undefined,
           folder_name: folderName,
+          folder_path: folderPath,
           is_archived: isArchived,
         });
         if (selectedFolderHandle) {
@@ -231,11 +220,13 @@ export function EditProjectModal({
                 <HardDrive className="w-4 h-4" />
               </div>
               <div className="min-w-0">
-                <div className="text-[12px] font-medium text-white truncate">
+                <div className="text-[12px] font-medium text-white truncate" title={selectedFolderPath || selectedFolderName}>
                   {selectedFolderName || "未关联本地代码目录"}
                 </div>
-                <div className="text-[10.5px] text-[#71717A] truncate">
-                  {selectedFolderName
+                <div className="text-[10.5px] text-[#71717A] truncate font-mono" title={selectedFolderPath}>
+                  {selectedFolderPath
+                    ? selectedFolderPath
+                    : selectedFolderName
                     ? "代码将以此本地目录作为真实工作区"
                     : "选择电脑上的项目代码文件夹"}
                 </div>

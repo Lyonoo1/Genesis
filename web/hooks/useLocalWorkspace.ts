@@ -11,6 +11,8 @@ import {
   writeLocalFile,
   WorkspaceFileNode,
 } from "@/lib/workspace/localWorkspaceManager";
+import { pickFolder } from "@/lib/workspace/pickFolder";
+import { useSessionStore } from "@/stores/useSessionStore";
 
 export type WorkspaceStatus =
   | "UNSUPPORTED" // 浏览器不支持 File System Access API
@@ -33,6 +35,27 @@ export function useLocalWorkspace(projectId: string | null) {
   // 1. 初始化检查当前设备 IndexedDB 状态
   const checkStatus = useCallback(async () => {
     if (typeof window === "undefined") return;
+
+    const isDesktopEnv =
+      typeof window !== "undefined" &&
+      (Boolean((window as any).electronAPI?.isDesktop) ||
+        process.env.NEXT_PUBLIC_BASE_PATH === "");
+
+    // 如果是桌面端环境，检查当前项目是否已有关联的物理路径
+    if (isDesktopEnv) {
+      const proj = useSessionStore
+        .getState()
+        .projects.find((p) => p && p.id === projectId);
+      const folderPath = proj?.folder_path;
+      const folderName = proj?.folder_name || proj?.name;
+      if (folderPath || folderName) {
+        setDirectoryName(folderName || "本地项目");
+        setStatus("CONNECTED");
+        return;
+      }
+      setStatus("DISCONNECTED_DEVICE");
+      return;
+    }
 
     if (!("showDirectoryPicker" in window)) {
       setStatus("UNSUPPORTED");
@@ -89,46 +112,49 @@ export function useLocalWorkspace(projectId: string | null) {
 
   // 2. 绑定或换电脑重新关联本地文件夹
   const attachDirectory = async (): Promise<FileSystemDirectoryHandle | null> => {
-    if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
-      if (typeof window !== "undefined" && !window.isSecureContext) {
-        alert(
-          "受浏览器安全策略限制：在非 HTTPS（HTTP IP）环境下，浏览器默认禁用本地文件访问功能。\n\n解决办法：\n1. 访问 chrome://flags/#unsafely-treat-insecure-origin-as-secure\n2. 将 " +
-            window.location.origin +
-            " 添加到白名单并设为 Enabled，点击 Relaunch 重启浏览器即可；\n3. 或者配置 HTTPS 域名直接访问。"
-        );
+    try {
+      const res = await pickFolder();
+      if (!res) return null;
+
+      if (res.path && projectId) {
+        useSessionStore.getState().updateProject(projectId, {
+          folder_name: res.name,
+          folder_path: res.path,
+        });
+      }
+
+      if (res.handle) {
+        const targetKey = projectId || "genesis-default-workspace";
+        await saveDirectoryHandle(targetKey, res.handle);
+
+        setRootHandle(res.handle);
+        setDirectoryName(res.name);
+        setStatus("CONNECTED");
+
+        setIsScanning(true);
+        let tree: WorkspaceFileNode[] = [];
+        try {
+          tree = await scanDirectory(res.handle);
+          setFileTree(tree);
+        } finally {
+          setIsScanning(false);
+        }
+
+        const firstFile = findFirstFile(tree);
+        if (firstFile) {
+          selectFile(firstFile.path, res.handle);
+        }
+        return res.handle;
+      } else if (res.path) {
+        setDirectoryName(res.name);
+        setStatus("CONNECTED");
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("genesis:workspace-refresh"));
+        }
         return null;
       }
-      alert("当前浏览器不支持访问本地文件夹，请使用最新版 Chrome、Edge 或 Arc。");
+
       return null;
-    }
-
-    try {
-      const handle: FileSystemDirectoryHandle = await (window as any).showDirectoryPicker({
-        mode: "readwrite",
-      });
-
-      const targetKey = projectId || "genesis-default-workspace";
-      await saveDirectoryHandle(targetKey, handle);
-
-      setRootHandle(handle);
-      setDirectoryName(handle.name);
-      setStatus("CONNECTED");
-
-      setIsScanning(true);
-      let tree: WorkspaceFileNode[] = [];
-      try {
-        tree = await scanDirectory(handle);
-        setFileTree(tree);
-      } finally {
-        setIsScanning(false);
-      }
-
-      // 默认选中第一个文件
-      const firstFile = findFirstFile(tree);
-      if (firstFile) {
-        selectFile(firstFile.path, handle);
-      }
-      return handle;
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         console.error("关联本地文件夹失败:", err);
@@ -188,14 +214,32 @@ export function useLocalWorkspace(projectId: string | null) {
   // 5. 选中并读取指定文件
   const selectFile = async (filePath: string, targetHandle?: FileSystemDirectoryHandle) => {
     const handle = targetHandle || rootHandle;
-    if (!handle) return;
+    if (handle) {
+      try {
+        setIsLoadingFile(true);
+        setActiveFilePath(filePath);
+        const res = await readLocalFile(handle, filePath);
+        setActiveFileContent(res.content);
+        setActiveFileSize(res.size);
+      } catch (err) {
+        console.error(`读取文件失败 (${filePath}):`, err);
+        setActiveFileContent(`// 读取文件失败: ${filePath}\n// 可能是文件被移动或编码不支持`);
+      } finally {
+        setIsLoadingFile(false);
+      }
+      return;
+    }
 
+    // 桌面端或无 handle 状态下，从服务端/本地 API 读取
     try {
       setIsLoadingFile(true);
       setActiveFilePath(filePath);
-      const res = await readLocalFile(handle, filePath);
-      setActiveFileContent(res.content);
-      setActiveFileSize(res.size);
+      const { fetchWorkspaceFileApi } = await import("@/lib/api/workspace");
+      const res = await fetchWorkspaceFileApi(filePath, null, projectId);
+      if (res?.success) {
+        setActiveFileContent(res.content);
+        setActiveFileSize(`${(res.size / 1024).toFixed(1)} KB`);
+      }
     } catch (err) {
       console.error(`读取文件失败 (${filePath}):`, err);
       setActiveFileContent(`// 读取文件失败: ${filePath}\n// 可能是文件被移动或编码不支持`);
@@ -206,9 +250,19 @@ export function useLocalWorkspace(projectId: string | null) {
 
   // 6. 保存或修改文件
   const saveFile = async (filePath: string, content: string) => {
-    if (!rootHandle) return;
-    await writeLocalFile(rootHandle, filePath, content);
-    setActiveFileContent(content);
+    if (rootHandle) {
+      await writeLocalFile(rootHandle, filePath, content);
+      setActiveFileContent(content);
+      return;
+    }
+
+    try {
+      const { writeWorkspaceFileApi } = await import("@/lib/api/workspace");
+      await writeWorkspaceFileApi(filePath, content, null, projectId);
+      setActiveFileContent(content);
+    } catch (e) {
+      console.warn("保存工作区文件失败:", e);
+    }
   };
 
   // 7. 刷新目录树

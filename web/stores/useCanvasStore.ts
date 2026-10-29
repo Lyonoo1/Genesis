@@ -763,7 +763,28 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       }
     }
 
-    // 3. 终极容错降级：触发文件流下载
+    // 3. 尝试通过后端工作区 API (支持桌面端本地直接落地与 Web 端 Bridge 穿透)
+    try {
+      const { writeWorkspaceFileApi } = await import("@/lib/api/workspace");
+      const saveRes = await writeWorkspaceFileApi(
+        artifact.filePath || artifact.title,
+        artifact.currentContent,
+        artifact.sessionId,
+        projectId
+      );
+      if (saveRes?.success) {
+        get().markSaved();
+        get().createSnapshot(`已保存至工作区 (${artifact.filePath || artifact.title})`);
+        return {
+          success: true,
+          message: `成功保存至工作区: ${artifact.filePath || artifact.title}`,
+        };
+      }
+    } catch (apiErr) {
+      console.warn("通过工作区 API 保存失败:", apiErr);
+    }
+
+    // 4. 终极容错降级：触发文件流下载
     triggerFileDownload(
       artifact.filePath.split("/").pop() || artifact.title,
       artifact.currentContent

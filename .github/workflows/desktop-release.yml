@@ -1,0 +1,99 @@
+name: Release Desktop App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+        include:
+          - os: macos-14
+            platform: darwin
+          - os: windows-latest
+            platform: win32
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Normalize workspace layout
+        shell: bash
+        run: |
+          echo "Current directory: $PWD"
+          if [ -d "Genesis" ] && [ -d "genesis-desktop" ]; then
+            echo "Both Genesis and genesis-desktop already exist side by side."
+          elif [ -f "pyinstaller.spec" ] && [ -f "package.json" ]; then
+            echo "Current repo is genesis-desktop, structuring layout and fetching Genesis..."
+            mkdir -p ../ws_tmp
+            cp -r . ../ws_tmp/
+            rm -rf * .[!.]*
+            mkdir -p genesis-desktop
+            cp -r ../ws_tmp/* ../ws_tmp/.[!.]* genesis-desktop/ 2>/dev/null || cp -r ../ws_tmp/* genesis-desktop/
+            rm -rf ../ws_tmp
+            git clone --depth 1 https://github.com/${{ github.repository_owner }}/Genesis.git Genesis
+          elif [ -d "api" ] && [ -d "web" ]; then
+            echo "Current repo is Genesis, structuring layout and fetching genesis-desktop..."
+            mkdir -p ../ws_tmp
+            cp -r . ../ws_tmp/
+            rm -rf * .[!.]*
+            mkdir -p Genesis
+            cp -r ../ws_tmp/* ../ws_tmp/.[!.]* Genesis/ 2>/dev/null || cp -r ../ws_tmp/* Genesis/
+            rm -rf ../ws_tmp
+            git clone --depth 1 https://github.com/${{ github.repository_owner }}/genesis-desktop.git genesis-desktop || true
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node.js & pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Build Frontend Static (Next.js)
+        shell: bash
+        run: |
+          cd Genesis/web
+          pnpm install
+          DESKTOP_BUILD=true pnpm build
+
+      - name: Build Python Engine (PyInstaller)
+        shell: bash
+        run: |
+          cd Genesis/api
+          pip install uv
+          uv sync
+          uv pip install pyinstaller pywinpty
+          cd ../../genesis-desktop
+          uv --project ../Genesis/api run pyinstaller --clean -y pyinstaller.spec
+          mkdir -p bin
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            cp dist/genesis-engine.exe bin/genesis-engine.exe
+          else
+            cp dist/genesis-engine bin/genesis-engine
+            chmod +x bin/genesis-engine
+          fi
+
+      - name: Package with Electron Builder
+        shell: bash
+        run: |
+          cd genesis-desktop
+          pnpm install
+          pnpm run build:main
+          pnpm exec electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

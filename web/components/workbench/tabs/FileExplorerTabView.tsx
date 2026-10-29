@@ -271,7 +271,7 @@ export function FileExplorerTabView({
       } else {
         // 3. 本地未连接时，从服务端工作区读取真实文件内容
         try {
-          const sRes = await fetchWorkspaceFileApi(filePath, activeSession?.id);
+          const sRes = await fetchWorkspaceFileApi(filePath, activeSession?.id, resolvedProjectId);
           if (sRes?.success && sRes.content !== undefined) {
             content = sRes.content;
             if (sRes.name) name = sRes.name;

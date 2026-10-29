@@ -1,6 +1,7 @@
 import asyncio
 import os
 import signal
+import sys
 import json
 from typing import Any
 
@@ -27,15 +28,22 @@ class SandboxExecutor:
         payload = json.dumps(input_args).encode("utf-8")
 
         # 2. 异步创建子进程，并设置独立会话首进程/进程组 (os.setsid)
+        is_win = sys.platform == "win32"
+        is_frozen = getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS")
+        if is_frozen:
+            import shutil
+            python_bin = shutil.which("python3") or shutil.which("python") or ("python" if is_win else "python3")
+        else:
+            python_bin = sys.executable or ("python" if is_win else "python3")
         process = await asyncio.create_subprocess_exec(
-            "python3",
+            python_bin,
             entry_path,
             cwd=working_dir,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=safe_env,
-            preexec_fn=os.setsid,
+            preexec_fn=None if is_win else os.setsid,
         )
 
         try:
@@ -46,10 +54,14 @@ class SandboxExecutor:
             )
         except asyncio.TimeoutError:
             # 4. 超时向整个进程组广播 SIGKILL，杜绝脚本内部派生的子进程沦为孤儿进程
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+            if is_win:
+                import subprocess
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True, check=False)
+            else:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
             raise AppException(
                 code=ErrorCode.SKILL_TIMEOUT,
                 message=f"Skill 执行超时（超过 {timeout} 秒），已被安全熔断并强杀",

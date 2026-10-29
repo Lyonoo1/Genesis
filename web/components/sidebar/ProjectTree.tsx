@@ -23,6 +23,7 @@ import { EditProjectModal, getProjectIconComponent } from "./EditProjectModal";
 import { EditSessionModal } from "./EditSessionModal";
 import { SidebarSessionItem } from "./SidebarSessionItem";
 import { saveDirectoryHandle } from "@/lib/workspace/localWorkspaceManager";
+import { pickFolder } from "@/lib/workspace/pickFolder";
 
 export function ProjectTree() {
   const router = useRouter();
@@ -141,49 +142,56 @@ export function ProjectTree() {
     setIsGlobalProjectMenuOpen(false);
     setIsProjectsOpen(true);
 
-    if (typeof window === "undefined" || !("showDirectoryPicker" in window)) {
-      setIsCreateProjectModalOpen(true);
+    const res = await pickFolder();
+    if (!res) {
       return;
     }
 
-    try {
-      const handle: FileSystemDirectoryHandle = await (
-        window as Window & {
-          showDirectoryPicker: (opts?: {
-            mode?: string;
-          }) => Promise<FileSystemDirectoryHandle>;
-        }
-      ).showDirectoryPicker({
-        mode: "readwrite",
-      });
+    const folderName = res.name || "本地项目";
+    const folderPath = res.path;
 
-      const folderName = handle.name || "本地项目";
-      const newProj = addProject(folderName, undefined, "folder", folderName);
-      if (newProj && newProj.id) {
+    // 若已经存在相同本地目录的项目，直接定位并聚焦，不重复创建
+    if (folderPath) {
+      const existing = projects.find(
+        (p) => !p.is_archived && p.folder_path && p.folder_path === folderPath
+      );
+      if (existing) {
+        setActiveProjectId(existing.id);
+        if (!existing.isExpanded) {
+          toggleProjectExpand(existing.id);
+        }
+        const projSessions = (sessions || []).filter(
+          (s) => s && s.project_id === existing.id && !s.is_archived
+        );
+        if (projSessions.length > 0) {
+          router.push(`/chat/${projSessions[0].id}`);
+        } else {
+          const newSession = await createSession("新对话", existing.id);
+          if (newSession?.id) {
+            router.push(`/chat/${newSession.id}`);
+          }
+        }
+        return;
+      }
+    }
+
+    const newProj = addProject(folderName, undefined, "folder", folderName, folderPath);
+    if (newProj && newProj.id) {
+      if (res.handle) {
         try {
-          await saveDirectoryHandle(newProj.id, handle);
+          await saveDirectoryHandle(newProj.id, res.handle);
         } catch (dbErr) {
           console.warn("保存本地目录句柄到 IndexedDB 失败:", dbErr);
         }
-        setActiveProjectId(newProj.id);
-        if (!newProj.isExpanded) {
-          toggleProjectExpand(newProj.id);
-        }
-
-        const newSession = await createSession("新对话", newProj.id);
-        if (newSession && newSession.id) {
-          router.push(`/chat/${newSession.id}`);
-        }
       }
-    } catch (err: unknown) {
-      if (
-        err &&
-        typeof err === "object" &&
-        "name" in err &&
-        err.name !== "AbortError"
-      ) {
-        console.error("选择文件夹创建项目失败:", err);
-        setIsCreateProjectModalOpen(true);
+      setActiveProjectId(newProj.id);
+      if (!newProj.isExpanded) {
+        toggleProjectExpand(newProj.id);
+      }
+
+      const newSession = await createSession("新对话", newProj.id);
+      if (newSession && newSession.id) {
+        router.push(`/chat/${newSession.id}`);
       }
     }
   };

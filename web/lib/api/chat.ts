@@ -2,7 +2,6 @@ import { getAuthToken, getApiBaseUrl, apiFetch } from "./client";
 import { parseSSEStream, SSEEventHandler } from "./streaming";
 import { Message } from "@/types";
 
-const API_BASE_URL = getApiBaseUrl();
 
 interface SendMessageStreamParams {
   sessionId: string;
@@ -37,7 +36,8 @@ export async function sendMessageStream({
   onEvent,
 }: SendMessageStreamParams): Promise<void> {
   const token = getAuthToken();
-  const url = `${API_BASE_URL}/api/chat/${sessionId}/stream`;
+  const baseUrl = getApiBaseUrl();
+  const url = `${baseUrl}/api/chat/${sessionId}/stream`;
 
   try {
     const res = await fetch(url, {

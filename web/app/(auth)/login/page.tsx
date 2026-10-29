@@ -242,11 +242,17 @@ function LoginForm() {
         });
 
         // 3. 读取目标重定向 URL (支持被拦截页面原路返回，带上 basePath 前缀)
-        const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "/genesis").replace(/\/+$/, "");
+        const rawBasePath =
+          process.env.NEXT_PUBLIC_BASE_PATH !== undefined
+            ? process.env.NEXT_PUBLIC_BASE_PATH
+            : "/genesis";
+        const basePath = rawBasePath.replace(/\/+$/, "");
         const rawTarget = searchParams.get("redirect") || "/";
-        const redirectTarget = rawTarget.startsWith(basePath)
-          ? rawTarget
-          : `${basePath}${rawTarget.startsWith("/") ? rawTarget : `/${rawTarget}`}`;
+        const redirectTarget = basePath
+          ? (rawTarget.startsWith(basePath)
+            ? rawTarget
+            : `${basePath}${rawTarget.startsWith("/") ? rawTarget : `/${rawTarget}`}`)
+          : (rawTarget.startsWith("/") ? rawTarget : `/${rawTarget}`);
         window.location.href = redirectTarget;
         return;
       }

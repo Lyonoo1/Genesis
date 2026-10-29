@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
@@ -807,6 +808,18 @@ class WorkspaceToolExecutor:
     @staticmethod
     def _kill_process_tree(pid: int) -> None:
         """连根拔起整个子进程组"""
+        if sys.platform == "win32":
+            import subprocess
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True,
+                    check=False,
+                )
+            except Exception as exc:
+                logger.warning("Windows清理进程组失败 pid=%d: %s", pid, exc)
+            return
+
         try:
             pgid = os.getpgid(pid)
             os.killpg(pgid, signal.SIGKILL)

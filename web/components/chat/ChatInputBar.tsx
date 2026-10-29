@@ -20,6 +20,8 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useModelConfigStore } from "@/stores/useModelConfigStore";
 import { useLocalWorkspace } from "@/hooks/useLocalWorkspace";
+import { pickFolder } from "@/lib/workspace/pickFolder";
+import { saveDirectoryHandle } from "@/lib/workspace/localWorkspaceManager";
 
 interface ChatInputBarProps {
   sessionId?: string | null;
@@ -70,14 +72,24 @@ export function ChatInputBar({
 
   // 项目下未关联文件夹校验逻辑：仅在明确属于某个项目且完全未设置过关联文件夹时成立
   const isProjectFolderMissing = Boolean(
-    targetProjectId && !currentProject?.folder_name
+    targetProjectId && !currentProject?.folder_name && !currentProject?.folder_path
   );
 
   const handlePickAndLinkFolder = async () => {
     if (!targetProjectId) return;
-    const handle = await attachDirectory();
-    if (handle) {
-      await updateProject(targetProjectId, { folder_name: handle.name });
+    const res = await pickFolder();
+    if (res) {
+      await updateProject(targetProjectId, {
+        folder_name: res.name,
+        folder_path: res.path,
+      });
+      if (res.handle) {
+        try {
+          await saveDirectoryHandle(targetProjectId, res.handle);
+        } catch (dbErr) {
+          console.warn("保存本地目录句柄到 IndexedDB 失败:", dbErr);
+        }
+      }
     }
   };
 
@@ -174,13 +186,23 @@ export function ChatInputBar({
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // 项目关联文件夹前置校验：仅当属于项目且完全未设置过关联文件夹时进行拦截引导
+    // 项目关联文件夹前置引导：仅当属于项目且完全未设置过关联文件夹时进行引导
     if (targetProjectId && isProjectFolderMissing) {
-      const handle = await attachDirectory();
-      if (!handle) {
-        return; // 用户取消选择，阻止发送
+      const res = await pickFolder();
+      if (res) {
+        await updateProject(targetProjectId, {
+          folder_name: res.name,
+          folder_path: res.path,
+        });
+        if (res.handle) {
+          try {
+            await saveDirectoryHandle(targetProjectId, res.handle);
+          } catch (dbErr) {
+            console.warn("保存本地目录句柄到 IndexedDB 失败:", dbErr);
+          }
+        }
       }
-      await updateProject(targetProjectId, { folder_name: handle.name });
+      // 注意：即使取消选择文件夹，也绝不拦截吞掉消息！允许继续与 Agent 交流
     }
 
     // 运行中实时插话 (Mid-task Steering)：不中断当前任务，加入 Codex 悬浮排队托盘

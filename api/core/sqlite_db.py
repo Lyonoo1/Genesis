@@ -6,18 +6,36 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator, Optional
 
-DB_PATH = Path(
-    os.environ.get(
-        "SQLITE_DB_PATH",
-        str(Path(__file__).resolve().parent.parent / "genesis.db"),
-    )
-)
+def _resolve_db_path() -> Path:
+    env_path = os.environ.get("SQLITE_DB_PATH")
+    if env_path:
+        return Path(env_path)
+    data_dir = os.environ.get("GENESIS_DATA_DIR")
+    if data_dir:
+        dir_path = Path(data_dir)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        target = dir_path / "genesis.db"
+        if not target.exists():
+            default_src = Path(__file__).resolve().parent.parent / "genesis.db"
+            if default_src.is_file():
+                import shutil
+                try:
+                    shutil.copy2(default_src, target)
+                except Exception:
+                    pass
+        return target
+    return Path(__file__).resolve().parent.parent / "genesis.db"
+
+
+DB_PATH = _resolve_db_path()
 
 
 @contextmanager
 def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
     """受控 SQLite 数据库连接上下文管理器：保证任何时候退出均显式 close() 释放锁与文件句柄"""
-    conn = sqlite3.connect(str(DB_PATH), timeout=30.0, check_same_thread=False)
+    db_path = _resolve_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=30.0, check_same_thread=False)
     conn.execute("PRAGMA busy_timeout=15000;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.row_factory = sqlite3.Row
@@ -151,6 +169,19 @@ def init_sqlite_db() -> None:
             );
             """
         )
+        cursor.execute("SELECT COUNT(*) AS cnt FROM users;")
+        if cursor.fetchone()["cnt"] == 0:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cursor.execute(
+                """
+                INSERT INTO users (id, username, email, password_hash, created_at)
+                VALUES 
+                ('00000000-0000-0000-0000-000000000001', 'developer', 'developer@genesis.local', '502c1c291df6d1ac473bbd31501783c7:b25e156c65b6e33fb9ab3387073f6beb8ffff81825071d54f764df716c04c065', ?),
+                ('5679628d-3646-476c-b3e3-9c4873514244', 'admin', 'admin@genesis.local', '22b71c96cef58b75d2d39496ecdb4f90:a93d718d26e2de086fcacc8b5b027dd2a9f21b375b88100b624e7ef24dcb7095', ?);
+                """,
+                (now_iso, now_iso),
+            )
+            conn.commit()
 
         # 6. 已安装技能表 (Installed Skills)
         cursor.execute(

@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from typing import Optional, Any
 from fastapi import APIRouter, Query, HTTPException, Depends
+from pydantic import BaseModel, Field
 from core.security import get_current_user, AuthenticatedUser
 from services.chat_service import chat_service
 from services.workspace_tool_executor import WorkspaceToolExecutor
@@ -14,18 +15,63 @@ IGNORE_NAMES = {
     ".next",
     "__pycache__",
     ".venv",
+    "venv",
     "dist",
     "build",
+    "release",
+    "out",
     ".DS_Store",
     ".turbo",
     ".cache",
     ".output",
     ".genesis_outputs",
+    ".idea",
+    ".vscode",
+}
+
+IGNORE_EXTS = {
+    ".pyc",
+    ".pyo",
+    ".pyd",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".class",
+    ".jar",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".7z",
+    ".rar",
+    ".dmg",
+    ".iso",
+    ".bin",
+    ".o",
+    ".a",
 }
 
 
-def build_file_tree(base_dir: Path, current_dir: Path, max_depth: int = 6, depth: int = 0) -> list[dict[str, Any]]:
-    if depth > max_depth or not current_dir.exists() or not current_dir.is_dir():
+class WorkspaceFileWriteRequest(BaseModel):
+    path: str = Field(..., description="文件相对路径")
+    content: str = Field(..., description="文件内容")
+    session_id: Optional[str] = Field(default=None, description="会话ID")
+    project_id: Optional[str] = Field(default=None, description="项目ID")
+    overwrite: bool = Field(default=True, description="是否覆写")
+
+
+def build_file_tree(
+    base_dir: Path,
+    current_dir: Path,
+    max_depth: int = 5,
+    depth: int = 0,
+    count_ref: Optional[list[int]] = None,
+    max_nodes: int = 2000,
+) -> list[dict[str, Any]]:
+    if count_ref is None:
+        count_ref = [0]
+
+    if depth > max_depth or count_ref[0] >= max_nodes or not current_dir.exists() or not current_dir.is_dir():
         return []
 
     nodes: list[dict[str, Any]] = []
@@ -35,12 +81,21 @@ def build_file_tree(base_dir: Path, current_dir: Path, max_depth: int = 6, depth
         return []
 
     for entry in entries:
-        if entry.name in IGNORE_NAMES or entry.name.startswith("."):
+        if count_ref[0] >= max_nodes:
+            break
+
+        if (
+            entry.name in IGNORE_NAMES
+            or entry.name.startswith(".")
+            or entry.name.endswith(".app")
+            or any(entry.name.lower().endswith(ext) for ext in IGNORE_EXTS)
+        ):
             continue
 
         rel_path = os.path.relpath(entry.path, base_dir).replace(os.sep, "/")
         if entry.is_dir(follow_symlinks=False):
-            children = build_file_tree(base_dir, Path(entry.path), max_depth, depth + 1)
+            count_ref[0] += 1
+            children = build_file_tree(base_dir, Path(entry.path), max_depth, depth + 1, count_ref, max_nodes)
             nodes.append({
                 "name": entry.name,
                 "path": rel_path,
@@ -48,6 +103,7 @@ def build_file_tree(base_dir: Path, current_dir: Path, max_depth: int = 6, depth
                 "children": children,
             })
         elif entry.is_file(follow_symlinks=False):
+            count_ref[0] += 1
             size = 0
             try:
                 size = entry.stat().st_size
@@ -72,6 +128,7 @@ async def get_workspace_tree(
     ws_root = await chat_service.resolve_workspace_root(
         user_id=user.id,
         session_id=session_id,
+        project_id=project_id,
     )
 
     if ws_root.startswith("bridge://"):
@@ -120,11 +177,13 @@ async def get_workspace_tree(
 async def get_workspace_file(
     path: str = Query(..., description="文件相对路径"),
     session_id: Optional[str] = Query(default=None, description="会话ID"),
+    project_id: Optional[str] = Query(default=None, description="项目ID"),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     ws_root = await chat_service.resolve_workspace_root(
         user_id=user.id,
         session_id=session_id,
+        project_id=project_id,
     )
 
     if ws_root.startswith("bridge://"):
@@ -170,3 +229,45 @@ async def get_workspace_file(
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"读取文件失败: {exc}")
+
+
+@router.post("/file", summary="向服务端工作区写入或创建文件")
+async def write_workspace_file(
+    body: WorkspaceFileWriteRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    ws_root = await chat_service.resolve_workspace_root(
+        user_id=user.id,
+        session_id=body.session_id,
+        project_id=body.project_id,
+    )
+
+    if ws_root.startswith("bridge://"):
+        from services.bridge_manager import BridgeManager
+        bridge = BridgeManager.get_instance()
+        uid = ws_root[len("bridge://"):].split("::", 1)[0]
+        res = await bridge.call_rpc(uid, "fs.writeFile", {"path": body.path, "content": body.content}, timeout=15)
+        if not res.get("success"):
+            raise HTTPException(status_code=500, detail=res.get("error", f"写入文件失败: {body.path}"))
+        return {
+            "success": True,
+            "path": body.path,
+            "size": len(body.content.encode("utf-8")),
+            "is_bridge": True,
+        }
+
+    try:
+        res = WorkspaceToolExecutor.write_file(
+            workspace_root=ws_root,
+            path=body.path,
+            content=body.content,
+            overwrite=body.overwrite,
+        )
+        if not res.get("success"):
+            raise HTTPException(status_code=500, detail=res.get("error", f"写入文件失败: {body.path}"))
+        return res
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"写入文件失败: {exc}")
+

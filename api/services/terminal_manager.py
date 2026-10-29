@@ -1,19 +1,56 @@
 import asyncio
 import codecs
-import fcntl
 import json
 import logging
 import os
-import pty
 import select
 import signal
 import struct
-import termios
+import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    try:
+        from winpty import PtyProcess
+    except ImportError:
+        PtyProcess = None
+    fcntl = None
+    pty = None
+    termios = None
+else:
+    import fcntl
+    import pty
+    import termios
+    PtyProcess = None
+
+
+def kill_process_group(pid: int, sig=signal.SIGTERM):
+    """跨平台终结进程组/进程树"""
+    if IS_WINDOWS:
+        import subprocess
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                check=False,
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            os.killpg(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+        except Exception as e:
+            logger.warning(f"Error terminating pg {pid}: {e}")
+
 
 logger = logging.getLogger("genesis.terminal")
 
@@ -71,10 +108,16 @@ class TerminalSession:
         self.subscribers: set[asyncio.Queue] = set()
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._reader_added: bool = False
+        self.pty_proc: Optional[Any] = None
+        self._win_reader_thread: Optional[threading.Thread] = None
 
     def start(self):
         """创建 PTY 主从对，并在独立进程组中拉起 Shell"""
         if self._is_alive:
+            return
+
+        if IS_WINDOWS:
+            self._start_windows()
             return
 
         master_fd, slave_fd = pty.openpty()
@@ -210,6 +253,69 @@ class TerminalSession:
                 f"[TerminalSession] 启动成功 id={self.id}, pid={self.pid}, master_fd={self.master_fd}, cwd={self.cwd}"
             )
 
+    def _start_windows(self):
+        if PtyProcess is None:
+            logger.error("[TerminalSession] winpty 未安装，Windows 终端无法启动")
+            return
+
+        target_dir = self.cwd if (self.cwd and os.path.isdir(self.cwd)) else os.getcwd()
+        env = os.environ.copy()
+        env["TERM"] = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+        env["LANG"] = "en_US.UTF-8"
+        env["LC_ALL"] = "en_US.UTF-8"
+        env["TERM_PROGRAM"] = "Genesis"
+        env["PWD"] = target_dir
+
+        shell = os.environ.get("COMSPEC", "powershell.exe")
+        try:
+            self.pty_proc = PtyProcess.spawn(
+                argv=[shell],
+                cwd=target_dir,
+                env=env,
+                dimensions=(self.rows, self.cols),
+            )
+            self.pid = getattr(self.pty_proc, "pid", None)
+            self._is_alive = True
+
+            if self.loop is None or self.loop.is_closed():
+                try:
+                    self.loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    try:
+                        self.loop = asyncio.get_event_loop_policy().get_event_loop()
+                    except Exception:
+                        self.loop = asyncio.new_event_loop()
+
+            def reader_thread():
+                while self._is_alive and self.pty_proc and self.pty_proc.isalive():
+                    try:
+                        chunk = self.pty_proc.read(8192)
+                        if not chunk:
+                            break
+                        data_bytes = chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+                        if self.loop and not self.loop.is_closed():
+                            self.loop.call_soon_threadsafe(self._append_and_broadcast, data_bytes)
+                    except EOFError:
+                        break
+                    except Exception:
+                        break
+                if self.loop and not self.loop.is_closed():
+                    self.loop.call_soon_threadsafe(self._handle_eof)
+
+            self._win_reader_thread = threading.Thread(target=reader_thread, daemon=True)
+            self._win_reader_thread.start()
+            logger.info(
+                f"[TerminalSession] Windows 终端启动成功 id={self.id}, pid={self.pid}, cwd={self.cwd}"
+            )
+        except Exception as e:
+            logger.error(f"[TerminalSession] Windows 启动 Shell 失败: {e}")
+            self._is_alive = False
+
+    def _append_and_broadcast(self, data: bytes):
+        self._append_history(data)
+        self._broadcast(data)
+
     def _on_pty_read(self):
         """PTY master_fd 读就绪回调，严防 EOF / EIO 导致的 100% CPU 忙循环"""
         if self.master_fd is None:
@@ -306,7 +412,16 @@ class TerminalSession:
 
     def write(self, data: str | bytes):
         """前端字符流输入写入 PTY master，支持非阻塞缓冲分块写入与满载保护"""
-        if not self.is_alive() or self.master_fd is None:
+        if not self.is_alive():
+            return
+        if IS_WINDOWS and self.pty_proc:
+            try:
+                text = data if isinstance(data, str) else data.decode("utf-8", errors="replace")
+                self.pty_proc.write(text)
+            except Exception as e:
+                logger.debug(f"[TerminalSession] Windows write failed: {e}")
+            return
+        if self.master_fd is None:
             return
         try:
             if isinstance(data, str):
@@ -335,7 +450,17 @@ class TerminalSession:
         except (TypeError, ValueError):
             return
 
-        if self.master_fd is None or not self.is_alive():
+        if not self.is_alive():
+            return
+
+        if IS_WINDOWS and self.pty_proc:
+            try:
+                self.pty_proc.set_winsize(self.rows, self.cols)
+            except Exception as e:
+                logger.debug(f"[TerminalSession] Windows resize failed: {e}")
+            return
+
+        if self.master_fd is None:
             return
         try:
             winsize = struct.pack("HHHH", self.rows, self.cols, 0, 0)
@@ -380,7 +505,19 @@ class TerminalSession:
 
     def is_alive(self) -> bool:
         """检测子进程与 PTY 当前是否存活"""
-        if not self._is_alive or not self.pid:
+        if not self._is_alive:
+            return False
+        if IS_WINDOWS:
+            if not self.pty_proc:
+                return False
+            alive = self.pty_proc.isalive()
+            if not alive:
+                self._is_alive = False
+                self._exit_code = getattr(self.pty_proc, "exitstatus", 0)
+                self._handle_eof()
+                return False
+            return True
+        if not self.pid:
             return False
         try:
             pid, status = os.waitpid(self.pid, os.WNOHANG)
@@ -427,10 +564,23 @@ class TerminalSession:
                     pass
         self._reader_added = False
 
+        if IS_WINDOWS:
+            if self.pty_proc:
+                try:
+                    self.pty_proc.terminate(force=True)
+                except Exception:
+                    pass
+                self.pty_proc = None
+            if self.pid:
+                kill_process_group(self.pid)
+                self.pid = None
+            self._is_alive = False
+            return
+
         old_pid = self.pid
         if old_pid:
             try:
-                os.killpg(old_pid, signal.SIGTERM)
+                kill_process_group(old_pid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 pass
             except Exception as e:
@@ -485,6 +635,10 @@ class TerminalSession:
 
     def _reap_process_async(self, pid: int):
         """非阻塞异步回收子进程，严防 time.sleep 阻塞主事件循环与僵尸进程驻留"""
+        if IS_WINDOWS:
+            kill_process_group(pid, signal.SIGKILL)
+            return
+
         try:
             wpid, status = os.waitpid(pid, os.WNOHANG)
             if wpid == pid:
@@ -510,7 +664,7 @@ class TerminalSession:
 
                 # 若仍未退出，升级为 SIGKILL 强杀进程组
                 try:
-                    os.killpg(pid, signal.SIGKILL)
+                    kill_process_group(pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     return
                 except Exception:
@@ -532,7 +686,7 @@ class TerminalSession:
                 time.sleep(0.05)
                 wpid, _ = os.waitpid(pid, os.WNOHANG)
                 if wpid != pid:
-                    os.killpg(pid, signal.SIGKILL)
+                    kill_process_group(pid, signal.SIGKILL)
                     time.sleep(0.02)
                     os.waitpid(pid, os.WNOHANG)
             except Exception:

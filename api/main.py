@@ -1,8 +1,11 @@
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
+from pathlib import Path
 import os
+import sys
 
 from core.config import settings
 from core.exceptions import AppException, ErrorCode
@@ -147,11 +150,95 @@ async def health_check():
     }
 
 
+def _start_parent_watchdog():
+    """监听父级 Electron 进程，父进程退出时主动自我销毁，防止僵尸孤儿进程残留"""
+    parent_pid_str = os.environ.get("PARENT_PID")
+    if not parent_pid_str:
+        return
+    try:
+        parent_pid = int(parent_pid_str)
+    except ValueError:
+        return
+
+    import threading
+    import time
+
+    def watchdog():
+        while True:
+            time.sleep(2)
+            try:
+                if sys.platform == "win32":
+                    import ctypes
+                    SYNCHRONIZE = 0x00100000
+                    handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
+                    if not handle:
+                        break
+                    WAIT_TIMEOUT = 0x00000102
+                    res = ctypes.windll.kernel32.WaitForSingleObject(handle, 0)
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    if res != WAIT_TIMEOUT:
+                        break
+                else:
+                    os.kill(parent_pid, 0)
+            except Exception:
+                break
+        os._exit(0)
+
+    t = threading.Thread(target=watchdog, daemon=True, name="ParentWatchdog")
+    t.start()
 
 
+_start_parent_watchdog()
+
+
+# 获取前端静态资源目录路径 (兼容 PyInstaller 打包后的 _MEIPASS 目录与普通运行目录)
+def get_web_dist_path() -> Path:
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "web_dist"
+    env_dist = os.environ.get("WEB_DIST_PATH")
+    if env_dist and Path(env_dist).is_dir():
+        return Path(env_dist)
+    return Path(__file__).resolve().parent.parent / "web" / "out"
+
+
+web_dist = get_web_dist_path()
+if web_dist.exists() and (web_dist / "_next").exists():
+    app.mount("/_next", StaticFiles(directory=str(web_dist / "_next")), name="next_assets")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_spa(full_path: str):
+    if full_path.startswith(("api", "docs", "redoc", "openapi.json", "preview", "db")):
+        raise HTTPException(status_code=404, detail="Not Found")
+    dist = get_web_dist_path()
+    if not (dist.exists() and (dist / "index.html").exists()):
+        raise HTTPException(status_code=404, detail="Frontend static dist not found")
+    target = dist / full_path
+    if target.is_file():
+        return FileResponse(target)
+    html_target = dist / f"{full_path}.html"
+    if html_target.is_file():
+        return FileResponse(html_target)
+    index_target = dist / full_path / "index.html"
+    if index_target.is_file():
+        return FileResponse(index_target)
+    if full_path.startswith("chat/"):
+        chat_default = dist / "chat" / "default.html"
+        if chat_default.is_file():
+            return FileResponse(chat_default)
+    return FileResponse(dist / "index.html")
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=settings.PORT, reload=True)
+    is_frozen = getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS")
+    if is_frozen:
+        uvicorn.run(app, host="0.0.0.0", port=settings.PORT, reload=False)
+    else:
+        uvicorn.run(
+            "main:app",
+            host="0.0.0.0",
+            port=settings.PORT,
+            reload=(settings.ENVIRONMENT == "development"),
+        )

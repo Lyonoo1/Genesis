@@ -134,8 +134,9 @@ class ChatService:
     async def resolve_workspace_root(
         self,
         user_id: str,
-        session_id: Any,
+        session_id: Any = None,
         explicit_path: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> str:
         """多级解析当前会话对应的真实物理工作区绝对路径"""
         # 0. 优先检测当前用户是否已建立本地 Bridge 反向隧道
@@ -149,20 +150,29 @@ class ChatService:
         if explicit_path and os.path.isdir(explicit_path):
             return os.path.abspath(explicit_path)
 
-        # 尝试通过 session -> project 反查项目名称与关联文件夹
+        # 尝试通过 session / project 反查项目名称与关联文件夹
         project_name: Optional[str] = None
         project_folder: Optional[str] = None
         try:
-            sess = await self.session_repo.get_by_id(user_id, session_id)
-            if sess and sess.get("project_id"):
-                proj = await self.project_repo.get_by_id(user_id, sess["project_id"])
+            target_project_id = project_id
+            if session_id:
+                sess = await self.session_repo.get_by_id(user_id, session_id)
+                if sess and sess.get("project_id"):
+                    target_project_id = sess["project_id"]
+            if target_project_id:
+                proj = await self.project_repo.get_by_id(user_id, target_project_id)
                 if proj:
                     project_name = proj.get("name")
                     project_folder = proj.get("folder_path") or proj.get("folder_name")
         except Exception as e:
             logger.warning("查询 Session/Project 关联异常: %s", e)
 
-        # 环境变量优先
+        # 若项目已明确绑定了本地存在的绝对目录路径，最高优先级命中
+        for candidate_name in [project_folder, project_name]:
+            if candidate_name and os.path.isabs(candidate_name) and os.path.isdir(candidate_name):
+                return os.path.abspath(candidate_name)
+
+        # 环境变量次之 (作为未指定项目路径时的默认备用根目录)
         env_root = os.environ.get("WORKSPACE_ROOT")
         if env_root and os.path.isdir(env_root):
             return os.path.abspath(env_root)

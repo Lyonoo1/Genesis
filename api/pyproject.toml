@@ -13,6 +13,7 @@ dependencies = [
     "sse-starlette>=2.0.0",
     "supabase>=2.3.0",
     "uvicorn[standard]>=0.28.0",
+    "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
 
 [tool.pytest.ini_options]
