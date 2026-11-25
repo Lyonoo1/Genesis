@@ -107,8 +107,8 @@ function SettingsContent() {
       {/* 1. 左侧设置侧边栏 (260px，对齐 Codex 设计) */}
       <aside className="w-[260px] bg-[#18181b] border-r border-[#26262B] flex flex-col shrink-0">
         {/* 控制栏 */}
-        <div className="pt-3.5 px-4 pb-2 flex items-center justify-end shrink-0">
-          <div className="flex items-center gap-1 text-[#71717A]">
+        <div className="h-11 px-4 flex items-center justify-end shrink-0 app-drag">
+          <div className="flex items-center gap-1 text-[#71717A] app-no-drag">
             <button
               type="button"
               onClick={handleBackToApp}
@@ -231,7 +231,8 @@ function SettingsContent() {
       </aside>
 
       {/* 2. 右侧主内容舞台 */}
-      <main className="flex-1 h-full overflow-y-auto bg-[#141416] p-8 lg:p-12 select-text">
+      <main className="flex-1 h-full overflow-y-auto bg-[#141416] p-8 lg:p-12 select-text relative">
+        <div className="absolute top-0 left-0 right-0 h-11 app-drag pointer-events-auto" />
         {activeSettingsTab === "general" && <GeneralTab />}
         {activeSettingsTab === "models" && <ModelsTab />}
         {activeSettingsTab === "history" && <HistoryTab />}

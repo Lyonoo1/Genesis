@@ -4,6 +4,7 @@ import collections
 import difflib
 import fnmatch
 import glob
+import hashlib
 import logging
 import os
 import re
@@ -11,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
@@ -278,8 +280,15 @@ class WorkspaceToolExecutor:
             return {"success": False, "error": str(e)}
 
     @classmethod
-    def read_file(cls, workspace_root: str, path: str) -> dict[str, Any]:
-        """读取工作区中指定文件的文本内容"""
+    def read_file(
+        cls,
+        workspace_root: str,
+        path: str,
+        offset: int = 1,
+        limit: int = 200,
+        with_line_numbers: bool = False,
+    ) -> dict[str, Any]:
+        """读取工作区中指定文件的文本内容，支持 offset 与 limit 行号探针分页"""
         target = cls.resolve_safe_path(workspace_root, path)
         if not target.exists():
             return {"success": False, "error": f"文件不存在: {path}"}
@@ -296,11 +305,74 @@ class WorkspaceToolExecutor:
                 }
 
             content = target.read_text(encoding="utf-8", errors="replace")
+            norm_content = content.replace("\r\n", "\n")
+            all_lines = norm_content.splitlines()
+            total_lines = len(all_lines)
+            sha256 = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+
+            off = max(1, int(offset))
+            lim = max(1, int(limit))
+            slice_start = off - 1
+            slice_end = min(total_lines, slice_start + lim)
+
+            if total_lines == 0:
+                selected_lines = []
+                start_line = 0
+                end_line = 0
+                has_more = False
+                sliced_content = ""
+            elif slice_start >= total_lines:
+                selected_lines = []
+                start_line = off
+                end_line = off
+                has_more = False
+                sliced_content = ""
+            else:
+                selected_lines = all_lines[slice_start:slice_end]
+                start_line = slice_start + 1
+                end_line = slice_start + len(selected_lines)
+                has_more = end_line < total_lines
+                sliced_content = "\n".join(selected_lines)
+
+            # 行号探针格式严格为 `  42 | def verify_token():`
+            numbered_lines: list[str] = []
+            for i, line in enumerate(selected_lines):
+                cur_line_no = slice_start + i + 1
+                numbered_lines.append(f"{cur_line_no:4d} | {line}")
+            numbered_content = "\n".join(numbered_lines)
+
+            # 分页提示
+            if has_more:
+                next_offset = end_line + 1
+                pagination_hint = (
+                    f"\n\n[Showing lines {start_line}-{end_line} of {total_lines}. "
+                    f"Call read_file with offset={next_offset} to read more]"
+                )
+            elif total_lines > 0:
+                pagination_hint = (
+                    f"\n\n[Showing lines {start_line}-{end_line} of {total_lines}. End of file]"
+                )
+            else:
+                pagination_hint = "\n\n[Empty file]"
+
+            # 兼容老测试断言：若 offset=1 且 limit>=total_lines，content 保持原文件内容
+            if off == 1 and lim >= total_lines:
+                effective_content = content if not with_line_numbers else numbered_content
+            else:
+                effective_content = sliced_content if not with_line_numbers else numbered_content
+
             return {
                 "success": True,
                 "path": path,
                 "size": file_size,
-                "content": content,
+                "content": effective_content,
+                "numbered_content": numbered_content,
+                "start_line": start_line,
+                "end_line": end_line,
+                "total_lines": total_lines,
+                "has_more": has_more,
+                "sha256": sha256,
+                "pagination_hint": pagination_hint.strip(),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -546,11 +618,22 @@ class WorkspaceToolExecutor:
         path: str,
         content: str,
         overwrite: bool = True,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """向工作区写入或创建文件，自动补齐中间父目录并生成 Unified Diff"""
+        """向工作区写入或创建文件，自动补齐中间父目录并生成 Unified Diff，事务级记录 file_snapshots"""
         target = cls.resolve_safe_path(workspace_root, path)
         if target.exists() and not overwrite:
             return {"success": False, "error": f"文件已存在且未开启覆写: {path}"}
+
+        # 1. 事务级影子 Git 快照
+        shadow_commit: Optional[str] = None
+        try:
+            sg = ShadowGitCheckpoint(workspace_root)
+            shadow_commit = sg.create_checkpoint(f"Pre-write snapshot for {path}")
+        except Exception as err:
+            logger.debug("Shadow git checkpoint error: %s", err)
 
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -575,6 +658,26 @@ class WorkspaceToolExecutor:
             deletions = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
 
             target.write_text(norm_content, encoding="utf-8")
+
+            # 2. 生成 patch_id 并持久化到 file_snapshots 表
+            patch_id = f"patch_{uuid.uuid4().hex[:12]}"
+            try:
+                from core.sqlite_db import db_insert_file_snapshot
+                db_insert_file_snapshot({
+                    "id": patch_id,
+                    "session_id": str(session_id or "default"),
+                    "turn_id": turn_id,
+                    "tool_call_id": tool_call_id,
+                    "file_path": path,
+                    "original_content": old_content,
+                    "modified_content": norm_content,
+                    "unified_diff": diff_str,
+                    "shadow_commit_hash": shadow_commit,
+                    "status": "applied",
+                })
+            except Exception as snap_err:
+                logger.warning("Failed saving file_snapshot: %s", snap_err)
+
             return {
                 "success": True,
                 "path": path,
@@ -586,6 +689,8 @@ class WorkspaceToolExecutor:
                 "deletions": deletions,
                 "original_content": old_content,
                 "modified_content": norm_content,
+                "patch_id": patch_id,
+                "shadow_commit_hash": shadow_commit,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -597,13 +702,24 @@ class WorkspaceToolExecutor:
         path: str,
         old_string: str,
         new_string: str,
+        session_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """四级降级模糊匹配局部替换 + AST 语法自愈预检 + 结构化 Unified Diff"""
+        """四级降级模糊匹配局部替换 + AST 语法自愈预检 + 事务级快照与 Unified Diff"""
         target = cls.resolve_safe_path(workspace_root, path)
         if not target.exists():
             return {"success": False, "error": f"文件不存在: {path}"}
         if not target.is_file():
             return {"success": False, "error": f"指定路径不是文件: {path}"}
+
+        # 1. 事务级影子 Git 快照
+        shadow_commit: Optional[str] = None
+        try:
+            sg = ShadowGitCheckpoint(workspace_root)
+            shadow_commit = sg.create_checkpoint(f"Pre-edit snapshot for {path}")
+        except Exception as err:
+            logger.debug("Shadow git checkpoint error: %s", err)
 
         try:
             content = target.read_text(encoding="utf-8", errors="replace")
@@ -650,6 +766,25 @@ class WorkspaceToolExecutor:
             # 落地写入
             target.write_text(new_content, encoding="utf-8")
 
+            # 2. 生成 patch_id 并持久化到 file_snapshots 表
+            patch_id = f"patch_{uuid.uuid4().hex[:12]}"
+            try:
+                from core.sqlite_db import db_insert_file_snapshot
+                db_insert_file_snapshot({
+                    "id": patch_id,
+                    "session_id": str(session_id or "default"),
+                    "turn_id": turn_id,
+                    "tool_call_id": tool_call_id,
+                    "file_path": path,
+                    "original_content": norm_content,
+                    "modified_content": new_content,
+                    "unified_diff": diff_str,
+                    "shadow_commit_hash": shadow_commit,
+                    "status": "applied",
+                })
+            except Exception as snap_err:
+                logger.warning("Failed saving file_snapshot: %s", snap_err)
+
             # AST 语法自愈预检
             syntax_warn = cls.check_syntax_errors(path, new_content)
             final_message = f"成功局部替换文件 '{path}' 中的代码块（{msg_or_err}）"
@@ -669,6 +804,8 @@ class WorkspaceToolExecutor:
                 "deletions": deletions,
                 "original_content": norm_content,
                 "modified_content": new_content,
+                "patch_id": patch_id,
+                "shadow_commit_hash": shadow_commit,
             }
             if syntax_warn:
                 res["syntax_warning"] = syntax_warn
@@ -837,6 +974,7 @@ class WorkspaceToolExecutor:
         is_background: Optional[bool] = None,
         callback: Optional[Any] = None,
         session_id: Optional[str] = None,
+        on_stdout: Optional[Callable[[str], Any]] = None,
     ) -> dict[str, Any]:
         """异步零死锁终端命令执行器：
         1. 支持 is_background 及守护命令正则识别
@@ -904,6 +1042,11 @@ class WorkspaceToolExecutor:
                     raw_line = line_bytes.decode("utf-8", errors="replace")
                     clean_line = cls.ANSI_ESCAPE_REGEX.sub("", raw_line).rstrip("\r\n")
                     buffer.append(clean_line)
+                    if on_stdout is not None:
+                        try:
+                            on_stdout(clean_line)
+                        except Exception:
+                            pass
                     if not ready_event.is_set():
                         url = _extract_url(clean_line)
                         if url:
@@ -1032,6 +1175,7 @@ class WorkspaceToolExecutor:
         is_background: Optional[bool] = None,
         callback: Optional[Any] = None,
         session_id: Optional[str] = None,
+        on_stdout: Optional[Callable[[str], Any]] = None,
     ) -> Any:
         """在项目工作区根目录下执行 Shell 指令。
 
@@ -1051,6 +1195,7 @@ class WorkspaceToolExecutor:
                 is_background=is_background,
                 callback=callback,
                 session_id=session_id,
+                on_stdout=on_stdout,
             )
         else:
             return asyncio.run(
@@ -1061,6 +1206,7 @@ class WorkspaceToolExecutor:
                     is_background=is_background,
                     callback=callback,
                     session_id=session_id,
+                    on_stdout=on_stdout,
                 )
             )
 

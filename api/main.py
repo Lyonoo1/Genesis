@@ -23,10 +23,14 @@ from routers.terminal import router as terminal_router
 from routers.preview import router as preview_router
 from routers.auth import router as auth_router
 from routers.workspace import router as workspace_router
+from routers.permission_rules import router as permission_rules_router
 from contextlib import asynccontextmanager
 from routers.bridge import router as bridge_router
 from routers.db_viewer import router as db_viewer_router
 from core.sqlite_db import init_sqlite_db
+
+import services.multi_agent_mesh  # noqa: F401 - 注册异步多代理网格内置工具
+import services.pty_tool_bridge  # noqa: F401 - 注册交互式 PTY 终端桥接内置工具
 
 # 初始化本地持久化 SQLite 数据库体系
 init_sqlite_db()
@@ -37,6 +41,8 @@ async def lifespan(app: FastAPI):
     yield
     from services.terminal_manager import TerminalManager
     TerminalManager.get_instance().cleanup_all()
+    from services.multi_agent_mesh import multi_agent_mesh
+    multi_agent_mesh.cleanup_all()
 
 
 is_dev = settings.ENVIRONMENT == "development"
@@ -64,6 +70,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(preview_router, prefix="/api")
 app.include_router(preview_router)
 app.include_router(workspace_router, prefix="/api")
+app.include_router(permission_rules_router, prefix="/api")
 
 # 仅开发环境允许通过 Web 查看和执行任意 SQL
 if is_dev:
@@ -193,11 +200,11 @@ _start_parent_watchdog()
 
 # 获取前端静态资源目录路径 (兼容 PyInstaller 打包后的 _MEIPASS 目录与普通运行目录)
 def get_web_dist_path() -> Path:
-    if hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS) / "web_dist"
     env_dist = os.environ.get("WEB_DIST_PATH")
     if env_dist and Path(env_dist).is_dir():
         return Path(env_dist)
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / "web_dist"
     return Path(__file__).resolve().parent.parent / "web" / "out"
 
 

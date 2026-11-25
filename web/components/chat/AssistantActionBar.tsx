@@ -57,7 +57,13 @@ export function AssistantActionBar({
       ? `${(metrics.latency_ms / 1000).toFixed(1)}s`
       : null;
   const formattedTokens =
-    metrics?.tokens !== undefined ? `${metrics.tokens} tokens` : null;
+    metrics?.tokens !== undefined
+      ? metrics.tokens >= 1_000_000
+        ? `累计 ${(metrics.tokens / 1_000_000).toFixed(2)}M tokens`
+        : metrics.tokens >= 1_000
+        ? `累计 ${(metrics.tokens / 1_000).toFixed(1)}k tokens`
+        : `累计 ${metrics.tokens} tokens`
+      : null;
 
   return (
     <div className="h-6 mt-3 flex items-center text-[#71717A] select-none">
@@ -112,7 +118,7 @@ export function AssistantActionBar({
           <ThumbsDown className="w-3.5 h-3.5 stroke-[1.8]" />
         </button>
 
-        {/* 点踩图标右侧：正常文字展示结束时间与纯耗时 */}
+        {/* 点踩图标右侧：结束时间、纯耗时与累计消耗 */}
         {(formattedTime || formattedLatency || formattedTokens) && (
           <div className="flex items-center gap-1.5 ml-2 text-[11px] font-mono text-[#71717A]/80 tracking-tight">
             {formattedTime && <span>{formattedTime}</span>}
@@ -121,7 +127,14 @@ export function AssistantActionBar({
             )}
             {formattedLatency && <span>{formattedLatency}</span>}
             {formattedLatency && formattedTokens && <span>·</span>}
-            {formattedTokens && <span>{formattedTokens}</span>}
+            {formattedTokens && (
+              <span
+                title={`本轮多步工具调用累计消耗：${metrics?.tokens?.toLocaleString()} tokens（含各步上下文往返，非单次上下文窗口占用）`}
+                className="cursor-help hover:text-zinc-300 transition-colors"
+              >
+                {formattedTokens}
+              </span>
+            )}
           </div>
         )}
       </div>

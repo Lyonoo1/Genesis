@@ -271,17 +271,21 @@ async def test_react_multistep_tool_calling():
 
 @pytest.mark.anyio
 async def test_react_max_steps_circuit_breaker():
-    """测试死循环工具调用时触发 max_steps=5 熔断保护"""
+    """测试死循环工具调用时触发语义防循环护栏（软纠偏 → 熔断收尾 + system_notice）"""
     session_id = uuid.uuid4()
     msg_repo = MockMessageRepository()
 
-    # 构造持续要求调用工具的无限循环
+    # 构造持续要求调用相同工具的无限循环 + 最后一轮无工具收尾总结
     infinite_step = [
         StreamChunk(type="tool_start", tool_call_id="call_loop", tool_name="mcp__loop__tool"),
         StreamChunk(type="tool_finish", tool_call_id="call_loop", tool_name="mcp__loop__tool", arguments={}),
         StreamChunk(type="finish", finish_reason="tool_calls"),
     ]
-    mock_llm = MockLLMAdapter(step_responses=[infinite_step] * 10)
+    wrap_summary = [
+        StreamChunk(type="text", text="已汇总当前进展，建议换一种方式继续排查。"),
+        StreamChunk(type="finish", finish_reason="stop"),
+    ]
+    mock_llm = MockLLMAdapter(step_responses=[infinite_step, infinite_step, infinite_step, wrap_summary])
 
     service = ChatService(
         message_repo=msg_repo,
@@ -298,7 +302,9 @@ async def test_react_max_steps_circuit_breaker():
         events.append(event_raw)
 
     full_output = "".join(events)
-    assert "已达到单轮对话 ReAct 最大步数上限" in full_output
+    assert "event: system_notice" in full_output
+    assert "doom_loop_stopped" in full_output or "step_budget_reached" in full_output
+    assert "已汇总当前进展" in full_output
     assert "event: done" in full_output
 
 

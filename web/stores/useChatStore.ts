@@ -4,22 +4,39 @@ import {
   sendMessageStream,
   stopGenerationApi,
   fetchSessionMessagesApi,
-  approveToolCallApi,
   steerChatApi,
 } from "@/lib/api/chat";
+import {
+  AgentLifecycleState,
+  ContextTelemetryPayload,
+} from "@/types/stream";
 import { useModelConfigStore } from "./useModelConfigStore";
-import { useSessionStore } from "./useSessionStore";
-import { useWorkbenchStore, SubagentInstance } from "./useWorkbenchStore";
-import { useProcessStore } from "./useProcessStore";
+import {
+  useWorkbenchStore,
+  SubagentMode,
+  SubagentPanelTabConfig,
+  SubagentStatus,
+} from "./useWorkbenchStore";
 import { useTodoStore } from "./useTodoStore";
-import { useUIStore } from "./useUIStore";
+import { useConfirmationStore } from "@/components/agent-confirmation/store/useConfirmationStore";
 
-export interface PendingPermission {
+export interface BatchedChatFrame {
   sessionId: string;
-  approvalId: string;
-  toolName: string;
-  arguments: Record<string, any>;
-  reason: string;
+  messageId: string;
+  textDelta?: string;
+  reasoningDelta?: string;
+  toolCallDeltas?: Record<string, string>;
+  parsedToolCallArgs?: Record<string, Record<string, unknown>>;
+}
+
+export interface SubagentToolCallSyncItem {
+  agentId: string;
+  parentCallId?: string;
+  status?: SubagentStatus;
+  summary?: string;
+  taskPrompt?: string;
+  agentType?: SubagentMode;
+  writeScope?: string[];
 }
 
 export interface QueuedSteeringItem {
@@ -46,7 +63,17 @@ interface ChatState {
   activeStreamingMessageId: string | null;
   streamingSessionId: string | null;
   abortController: AbortController | null;
-  pendingPermission: PendingPermission | null;
+
+  // 双模态与生命周期状态机
+  runModeBySession: Record<string, "plan" | "act">;
+  lifecycleStateBySession: Record<string, AgentLifecycleState>;
+  proposedPlanBySession: Record<string, { planId: string; plan: string; step?: number } | null>;
+  contextTelemetryBySession: Record<string, ContextTelemetryPayload | null>;
+
+  runMode: "plan" | "act";
+  lifecycleState: AgentLifecycleState;
+  proposedPlan: { planId: string; plan: string; step?: number } | null;
+  contextTelemetry: ContextTelemetryPayload | null;
 
   // Codex 级排队系统 (Steering Queue)
   steeringQueueBySession: Record<string, QueuedSteeringItem[]>;
@@ -55,6 +82,50 @@ interface ChatState {
   removeSteeringItem: (sessionId: string, id: string) => void;
   clearSteeringQueue: (sessionId: string) => void;
   reorderSteeringQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
+
+  setRunMode: (mode: "plan" | "act", sessionId?: string) => void;
+  setLifecycleState: (state: AgentLifecycleState, sessionId?: string) => void;
+  setProposedPlan: (plan: { planId: string; plan: string; step?: number } | null, sessionId?: string) => void;
+  setContextTelemetry: (telemetry: ContextTelemetryPayload | null, sessionId?: string) => void;
+  submitPlanDecision: (
+    sessionId: string,
+    approved: boolean,
+    feedback?: string,
+    autoContinue?: boolean
+  ) => Promise<boolean>;
+
+  // 供 StreamDispatcher 调用的批量/原子状态更新 Actions
+  applyBatchedStreamFrame: (frame: BatchedChatFrame) => void;
+  appendToolCall: (sessionId: string, messageId: string, toolCall: ToolCallItem) => void;
+  updateToolCallResult: (
+    sessionId: string,
+    messageId: string,
+    params: {
+      toolCallId: string;
+      agentId?: string;
+      output: unknown;
+      latencyMs?: number;
+      isError: boolean;
+    }
+  ) => void;
+  syncSubagentToolCalls: (sessionId: string, items: SubagentToolCallSyncItem[]) => void;
+  updateMessageMetrics: (
+    sessionId: string,
+    messageId: string,
+    metrics: { latency_ms?: number; tokens?: number }
+  ) => void;
+  applyMidTaskSteered: (sessionId: string, messageId: string, steerText: string) => void;
+  applyStreamDone: (
+    sessionId: string,
+    messageId: string,
+    params: {
+      durationMs: number;
+      totalTokens?: number;
+      finalLifecycleState: AgentLifecycleState;
+      mode?: "plan" | "act";
+    }
+  ) => void;
+  applyStreamError: (sessionId: string, messageId: string, errorMessage: string) => void;
 
   getMessages: (sessionId: string) => Message[];
   addMessage: (sessionId: string, message: Message) => void;
@@ -65,10 +136,10 @@ interface ChatState {
     sessionId: string,
     content: string,
     skillId?: string | null,
-    parentId?: string | null
+    parentId?: string | null,
+    mode?: "plan" | "act"
   ) => Promise<void>;
   sendSteerMessage: (sessionId: string, content: string) => Promise<boolean>;
-  respondPermission: (approved: boolean) => Promise<void>;
   stopGeneration: (sessionId: string) => Promise<void>;
   switchSession: (newSessionId: string) => void;
   fetchMessages: (sessionId: string) => Promise<void>;
@@ -77,6 +148,12 @@ interface ChatState {
 }
 
 const INITIAL_DEMO_MESSAGES: Record<string, Message[]> = {};
+
+function isSessionCurrentlyActive(sessionId?: string | null): boolean {
+  if (!sessionId) return true;
+  const activeWbSid = useWorkbenchStore.getState().activeSessionId;
+  return !activeWbSid || activeWbSid === sessionId;
+}
 
 /**
  * 安全收拢指定 session 中所有仍处于 running 状态的子代理实例与步骤，防止界面持续转圈 loading
@@ -87,8 +164,8 @@ function cleanupRunningSubagents(sessionId: string, targetStatus: "failed" | "co
     const currentSessionTabs = (sessionId && wb.workbenchBySession[sessionId]?.tabs) || wb.tabs || [];
     for (const t of currentSessionTabs) {
       if (t.kind === "subagent-panel") {
-        const panel = t as any;
-        for (const agent of (panel.agents || [])) {
+        const panel = t as SubagentPanelTabConfig;
+        for (const agent of panel.agents || []) {
           if (agent.status === "running") {
             wb.updateAgentInstance(agent.id, {
               status: targetStatus,
@@ -136,8 +213,586 @@ export const useChatStore = create<ChatState>((set, get) => ({
   activeStreamingMessageId: null,
   streamingSessionId: null,
   abortController: null,
-  pendingPermission: null,
   steeringQueueBySession: {},
+
+  runModeBySession: {},
+  lifecycleStateBySession: {},
+  proposedPlanBySession: {},
+  contextTelemetryBySession: {},
+  runMode: "act",
+  lifecycleState: AgentLifecycleState.IDLE,
+  proposedPlan: null,
+  contextTelemetry: null,
+
+  setRunMode: (mode, sessionId) => {
+    set((state) => {
+      const sid = sessionId || useWorkbenchStore.getState().activeSessionId || "draft";
+      const syncGlobal = !sessionId || isSessionCurrentlyActive(sid);
+      return {
+        ...(syncGlobal ? { runMode: mode } : {}),
+        runModeBySession: {
+          ...state.runModeBySession,
+          [sid]: mode,
+        },
+      };
+    });
+  },
+
+  setLifecycleState: (lifecycleState, sessionId) => {
+    set((state) => {
+      const sid = sessionId || useWorkbenchStore.getState().activeSessionId || "draft";
+      const syncGlobal = !sessionId || isSessionCurrentlyActive(sid);
+      return {
+        ...(syncGlobal ? { lifecycleState } : {}),
+        lifecycleStateBySession: {
+          ...state.lifecycleStateBySession,
+          [sid]: lifecycleState,
+        },
+      };
+    });
+  },
+
+  setProposedPlan: (proposedPlan, sessionId) => {
+    set((state) => {
+      const sid = sessionId || useWorkbenchStore.getState().activeSessionId || "draft";
+      const syncGlobal = !sessionId || isSessionCurrentlyActive(sid);
+      return {
+        ...(syncGlobal ? { proposedPlan } : {}),
+        proposedPlanBySession: {
+          ...state.proposedPlanBySession,
+          [sid]: proposedPlan,
+        },
+      };
+    });
+  },
+
+  setContextTelemetry: (contextTelemetry, sessionId) => {
+    set((state) => {
+      const sid = sessionId || useWorkbenchStore.getState().activeSessionId || "draft";
+      const syncGlobal = !sessionId || isSessionCurrentlyActive(sid);
+      return {
+        ...(syncGlobal ? { contextTelemetry } : {}),
+        contextTelemetryBySession: {
+          ...state.contextTelemetryBySession,
+          [sid]: contextTelemetry,
+        },
+      };
+    });
+  },
+
+  submitPlanDecision: async (sessionId, approved, feedback, autoContinue = true) => {
+    try {
+      const { submitPlanDecisionApi } = await import("@/lib/api/chat");
+      await submitPlanDecisionApi(sessionId, approved, feedback);
+      const nextMode: "plan" | "act" = approved ? "act" : "plan";
+      const nextLifecycle = approved
+        ? AgentLifecycleState.COMPILING_CONTEXT
+        : AgentLifecycleState.PLANNING;
+      const syncGlobal = isSessionCurrentlyActive(sessionId);
+
+      set((state) => ({
+        ...(syncGlobal
+          ? {
+              runMode: nextMode,
+              lifecycleState: nextLifecycle,
+              proposedPlan: null,
+            }
+          : {}),
+        runModeBySession: {
+          ...state.runModeBySession,
+          [sessionId]: nextMode,
+        },
+        lifecycleStateBySession: {
+          ...state.lifecycleStateBySession,
+          [sessionId]: nextLifecycle,
+        },
+        proposedPlanBySession: {
+          ...state.proposedPlanBySession,
+          [sessionId]: null,
+        },
+      }));
+
+      useWorkbenchStore
+        .getState()
+        .setActivePlanState(
+          approved
+            ? null
+            : {
+                planId: `plan_rev_${Date.now()}`,
+                plan: feedback || "",
+                status: "rejected",
+              },
+          sessionId
+        );
+
+      // 决策通过后自动衔接下一轮 Act 执行或 Plan 重构流
+      if (autoContinue && sessionId && !get().isStreamingForSession(sessionId)) {
+        if (approved) {
+          void get().sendStreamMessage(
+            sessionId,
+            "计划已批准，请切换至 Act 模式按计划逐步实施执行。",
+            null,
+            null,
+            "act"
+          );
+        } else if (feedback && feedback.trim()) {
+          void get().sendStreamMessage(
+            sessionId,
+            `请根据以下修改意见修订实现计划：\n${feedback.trim()}`,
+            null,
+            null,
+            "plan"
+          );
+        }
+      }
+
+      return true;
+    } catch (err) {
+      console.error("[useChatStore] submitPlanDecision failed:", err);
+      return false;
+    }
+  },
+
+  applyBatchedStreamFrame: (frame: BatchedChatFrame) => {
+    const {
+      sessionId,
+      messageId,
+      textDelta,
+      reasoningDelta,
+      toolCallDeltas,
+      parsedToolCallArgs,
+    } = frame;
+    set((state) => {
+      const currentMessages = state.messagesBySession[sessionId];
+      if (!currentMessages || currentMessages.length === 0) return state;
+
+      // 优先精确命中 messageId，若因 steer 切消息兜底回退到最后一个 streaming assistant 消息
+      let msgIndex = currentMessages.findIndex((m) => m.id === messageId);
+      if (msgIndex === -1) {
+        for (let i = currentMessages.length - 1; i >= 0; i--) {
+          if (currentMessages[i].role === "assistant" && currentMessages[i].status === "streaming") {
+            msgIndex = i;
+            break;
+          }
+        }
+      }
+      if (msgIndex === -1) return state;
+
+      const targetMsg = currentMessages[msgIndex];
+      const nextContent = textDelta
+        ? (targetMsg.content || "") + textDelta
+        : targetMsg.content || "";
+      const nextReasoning = reasoningDelta
+        ? (targetMsg.reasoning_content || "") + reasoningDelta
+        : targetMsg.reasoning_content || "";
+
+      const hasDeltas = Boolean(
+        toolCallDeltas && Object.keys(toolCallDeltas).length > 0
+      );
+      const hasParsed = Boolean(
+        parsedToolCallArgs && Object.keys(parsedToolCallArgs).length > 0
+      );
+
+      let nextToolCalls = targetMsg.raw_tool_calls;
+      if ((hasDeltas || hasParsed) && targetMsg.raw_tool_calls) {
+        nextToolCalls = targetMsg.raw_tool_calls.map((tc) => {
+          const parsed = parsedToolCallArgs?.[tc.id];
+          const delta = toolCallDeltas?.[tc.id];
+          if (!parsed && !delta) return tc;
+
+          const baseArgs: Record<string, unknown> = { ...(tc.args || {}) };
+          if (parsed) {
+            delete baseArgs.raw_delta;
+            return {
+              ...tc,
+              args: {
+                ...baseArgs,
+                ...parsed,
+              },
+            };
+          }
+
+          if (delta) {
+            const combined = ((baseArgs.raw_delta as string) || "") + delta;
+            try {
+              const maybeParsed: unknown = JSON.parse(combined);
+              if (
+                typeof maybeParsed === "object" &&
+                maybeParsed !== null &&
+                !Array.isArray(maybeParsed)
+              ) {
+                delete baseArgs.raw_delta;
+                return {
+                  ...tc,
+                  args: {
+                    ...baseArgs,
+                    ...(maybeParsed as Record<string, unknown>),
+                  },
+                };
+              }
+            } catch {
+              // 半截 JSON，暂存 raw_delta 等待后续分片补全
+            }
+            return {
+              ...tc,
+              args: {
+                ...baseArgs,
+                raw_delta: combined,
+              },
+            };
+          }
+
+          return tc;
+        });
+      }
+
+      const updatedMsg: Message = {
+        ...targetMsg,
+        content: nextContent,
+        reasoning_content: nextReasoning || undefined,
+        raw_tool_calls: nextToolCalls,
+      };
+
+      const updatedMessages = currentMessages.slice();
+      updatedMessages[msgIndex] = updatedMsg;
+
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: updatedMessages,
+        },
+      };
+    });
+  },
+
+  appendToolCall: (sessionId, messageId, toolCall) => {
+    set((state) => {
+      const list = state.messagesBySession[sessionId];
+      if (!list) return state;
+      const msgIdx = list.findIndex((m) => m.id === messageId);
+      if (msgIdx === -1) return state;
+      const target = list[msgIdx];
+      const existingTools = target.raw_tool_calls || [];
+      const dupIdx = existingTools.findIndex((t) => t.id === toolCall.id);
+      const nextTools =
+        dupIdx >= 0
+          ? existingTools.map((t, i) => (i === dupIdx ? { ...t, ...toolCall } : t))
+          : [...existingTools, toolCall];
+      const nextList = list.slice();
+      nextList[msgIdx] = { ...target, raw_tool_calls: nextTools };
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: nextList,
+        },
+      };
+    });
+  },
+
+  updateToolCallResult: (sessionId, messageId, params) => {
+    const { toolCallId, agentId, output, latencyMs, isError } = params;
+    set((state) => {
+      const list = state.messagesBySession[sessionId];
+      if (!list) return state;
+      const msgIdx = list.findIndex((m) => m.id === messageId);
+      if (msgIdx === -1) return state;
+      const target = list[msgIdx];
+      if (!target.raw_tool_calls || target.raw_tool_calls.length === 0) return state;
+
+      const nextTools = target.raw_tool_calls.map((tc) => {
+        const isMatch =
+          tc.id === toolCallId ||
+          (agentId && tc.id === agentId) ||
+          (agentId && `agent-${tc.id}` === agentId) ||
+          (toolCallId && `agent-${toolCallId}` === tc.id);
+        if (!isMatch) return tc;
+        return {
+          ...tc,
+          output: output as string | Record<string, unknown> | undefined,
+          latency_ms: latencyMs ?? tc.latency_ms,
+          status: isError ? ("failed" as const) : ("success" as const),
+        };
+      });
+
+      const nextList = list.slice();
+      nextList[msgIdx] = { ...target, raw_tool_calls: nextTools };
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: nextList,
+        },
+      };
+    });
+  },
+
+  syncSubagentToolCalls: (sessionId, items) => {
+    if (!items || items.length === 0) return;
+    set((state) => {
+      const list = state.messagesBySession[sessionId];
+      if (!list || list.length === 0) return state;
+
+      let changed = false;
+      const nextList = list.map((m) => {
+        if (!m.raw_tool_calls || m.raw_tool_calls.length === 0) return m;
+        let msgChanged = false;
+        const nextTools = m.raw_tool_calls.map((tc) => {
+          const matched = items.find((item) => {
+            const rawId = item.agentId.replace(/^agent-/, "");
+            return (
+              tc.id === item.agentId ||
+              tc.id === rawId ||
+              (item.parentCallId && tc.id === item.parentCallId)
+            );
+          });
+          if (!matched) return tc;
+
+          const updatedStatus =
+            matched.status === "completed"
+              ? ("success" as const)
+              : matched.status === "failed" || matched.status === "terminated"
+              ? ("failed" as const)
+              : tc.status;
+
+          const nextArgs = {
+            ...(tc.args || {}),
+            ...(matched.taskPrompt ? { task_prompt: matched.taskPrompt } : {}),
+            ...(matched.agentType ? { agent_type: matched.agentType, mode: matched.agentType } : {}),
+            ...(matched.writeScope ? { write_scope: matched.writeScope } : {}),
+          };
+
+          const nextOutput =
+            matched.summary &&
+            (matched.status === "completed" ||
+              matched.status === "failed" ||
+              matched.status === "terminated")
+              ? typeof tc.output === "object" && tc.output !== null
+                ? { ...(tc.output as Record<string, unknown>), summary: matched.summary, agent_id: matched.agentId }
+                : { summary: matched.summary, agent_id: matched.agentId }
+              : tc.output;
+
+          msgChanged = true;
+          changed = true;
+          return {
+            ...tc,
+            status: updatedStatus,
+            args: nextArgs,
+            output: nextOutput,
+          };
+        });
+        return msgChanged ? { ...m, raw_tool_calls: nextTools } : m;
+      });
+
+      if (!changed) return state;
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: nextList,
+        },
+      };
+    });
+  },
+
+  updateMessageMetrics: (sessionId, messageId, metrics) => {
+    set((state) => {
+      const list = state.messagesBySession[sessionId];
+      if (!list) return state;
+      const msgIdx = list.findIndex((m) => m.id === messageId);
+      if (msgIdx === -1) return state;
+      const nextList = list.slice();
+      nextList[msgIdx] = {
+        ...nextList[msgIdx],
+        metrics: {
+          ...(nextList[msgIdx].metrics || {}),
+          ...metrics,
+        },
+      };
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: nextList,
+        },
+      };
+    });
+  },
+
+  applyMidTaskSteered: (sessionId, messageId, steerText) => {
+    set((state) => {
+      const curQueue = state.steeringQueueBySession[sessionId] || [];
+      const matched =
+        curQueue.find((item) => item.content === steerText) || curQueue[0];
+      const remaining = matched
+        ? curQueue.filter((item) => item.id !== matched.id)
+        : curQueue;
+
+      const resolvedContent = steerText || matched?.content || "实时转向指令";
+      const list = state.messagesBySession[sessionId] || [];
+
+      // 查找 sendSteerMessage 乐观推入的待确认 steer_ 气泡（从后往前找最近一条）
+      let optimisticSteerIdx = -1;
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const msg = list[i];
+        if (
+          msg.role === "user" &&
+          msg.id.startsWith("steer_") &&
+          msg.status === "streaming" &&
+          msg.content === resolvedContent
+        ) {
+          optimisticSteerIdx = i;
+          break;
+        }
+      }
+
+      const updatedList = list.map((m, idx) => {
+        if (m.id === messageId) return { ...m, status: "success" as const };
+        if (idx === optimisticSteerIdx) {
+          return { ...m, status: "success" as const };
+        }
+        return m;
+      });
+
+      const nextAiId = `ai_steered_${Date.now()}`;
+      const nextAiMsg: Message = {
+        id: nextAiId,
+        session_id: sessionId,
+        role: "assistant",
+        content: "",
+        raw_tool_calls: [],
+        status: "streaming",
+        created_at: new Date().toISOString(),
+      };
+
+      const nextMessages =
+        optimisticSteerIdx !== -1
+          ? [...updatedList, nextAiMsg]
+          : [
+              ...updatedList,
+              {
+                id: `user_steered_${Date.now()}`,
+                session_id: sessionId,
+                role: "user" as const,
+                content: resolvedContent,
+                status: "success" as const,
+                created_at: new Date().toISOString(),
+              },
+              nextAiMsg,
+            ];
+
+      const curSessionStream = state.streamingSessions[sessionId];
+      const nextStreamingSessions = curSessionStream
+        ? {
+            ...state.streamingSessions,
+            [sessionId]: {
+              ...curSessionStream,
+              activeStreamingMessageId: nextAiId,
+            },
+          }
+        : state.streamingSessions;
+
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: nextMessages,
+        },
+        steeringQueueBySession: {
+          ...state.steeringQueueBySession,
+          [sessionId]: remaining,
+        },
+        ...computeStreamingState(nextStreamingSessions),
+      };
+    });
+  },
+
+  applyStreamDone: (sessionId, messageId, params) => {
+    const { durationMs, totalTokens, finalLifecycleState, mode } = params;
+    set((state) => {
+      const list = state.messagesBySession[sessionId] || [];
+      const nextStreaming = { ...state.streamingSessions };
+      delete nextStreaming[sessionId];
+      const syncGlobal = isSessionCurrentlyActive(sessionId);
+
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: list.map((m) =>
+            m.id === messageId
+              ? {
+                  ...m,
+                  status: "success",
+                  created_at: new Date().toISOString(),
+                  metrics: {
+                    latency_ms: durationMs,
+                    tokens: totalTokens ?? m.metrics?.tokens,
+                  },
+                  raw_tool_calls: (m.raw_tool_calls || []).map((tc) => ({
+                    ...tc,
+                    status: tc.status === "failed" ? "failed" : "success",
+                  })),
+                }
+              : m
+          ),
+        },
+        ...computeStreamingState(nextStreaming),
+        ...(syncGlobal ? { lifecycleState: finalLifecycleState } : {}),
+        lifecycleStateBySession: {
+          ...state.lifecycleStateBySession,
+          [sessionId]: finalLifecycleState,
+        },
+        ...(mode
+          ? {
+              ...(syncGlobal ? { runMode: mode } : {}),
+              runModeBySession: {
+                ...state.runModeBySession,
+                [sessionId]: mode,
+              },
+            }
+          : {}),
+      };
+    });
+
+    // 正常完成的 FIFO 自动出队（等待 Plan 审批时暂停自动出队）
+    if (finalLifecycleState !== AgentLifecycleState.AWAITING_PLAN_APPROVAL) {
+      const q = get().steeringQueueBySession[sessionId] || [];
+      if (q.length > 0) {
+        const nextItem = q[0];
+        get().removeSteeringItem(sessionId, nextItem.id);
+        setTimeout(() => {
+          void get().sendStreamMessage(sessionId, nextItem.content);
+        }, 100);
+      }
+    }
+  },
+
+  applyStreamError: (sessionId, messageId, errorMessage) => {
+    useConfirmationStore.getState().resolveAllForSession(sessionId);
+    set((state) => {
+      const list = state.messagesBySession[sessionId] || [];
+      const nextStreaming = { ...state.streamingSessions };
+      delete nextStreaming[sessionId];
+      const syncGlobal = isSessionCurrentlyActive(sessionId);
+
+      return {
+        messagesBySession: {
+          ...state.messagesBySession,
+          [sessionId]: list.map((m) =>
+            m.id === messageId
+              ? {
+                  ...m,
+                  status: "failed",
+                  content:
+                    (m.content || "") + `\n\n*(生成中断: ${errorMessage})*`,
+                }
+              : m
+          ),
+        },
+        ...computeStreamingState(nextStreaming),
+        ...(syncGlobal ? { lifecycleState: AgentLifecycleState.INTERRUPTED } : {}),
+        lifecycleStateBySession: {
+          ...state.lifecycleStateBySession,
+          [sessionId]: AgentLifecycleState.INTERRUPTED,
+        },
+      };
+    });
+  },
 
   enqueueSteering: async (sessionId: string, content: string) => {
     const trimmed = content.trim();
@@ -217,6 +872,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   resetChatStore: () => {
+    useConfirmationStore.getState().resetStore();
     set({
       messagesBySession: {},
       streamingSessions: {},
@@ -225,7 +881,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       activeStreamingMessageId: null,
       streamingSessionId: null,
       abortController: null,
-      pendingPermission: null,
     });
   },
 
@@ -263,12 +918,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
     sessionId: string,
     content: string,
     skillId?: string | null,
-    parentId?: string | null
+    parentId?: string | null,
+    mode?: "plan" | "act"
   ) => {
+    // Chat Override 乐观关闭该会话可能残留的确认气泡
+    useConfirmationStore.getState().resolveAllForSession(sessionId);
+
     const sessionStreaming = get().streamingSessions[sessionId]?.isStreaming;
     if (sessionStreaming) {
       await get().stopGeneration(sessionId);
     }
+
+    const effectiveMode: "plan" | "act" =
+      mode || get().runModeBySession[sessionId] || get().runMode || "act";
 
     const turnStartTime = Date.now();
     const userMsgId = `user_${turnStartTime}`;
@@ -301,6 +963,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const controller = new AbortController();
     const currentMessages = get().messagesBySession[sessionId] || [];
+    const nextInitialState =
+      effectiveMode === "plan"
+        ? AgentLifecycleState.PLANNING
+        : AgentLifecycleState.COMPILING_CONTEXT;
+
     set((state) => {
       const nextStreamingSessions = {
         ...state.streamingSessions,
@@ -316,11 +983,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
           [sessionId]: [...currentMessages, userMsg, aiMsg],
         },
         ...computeStreamingState(nextStreamingSessions),
-        pendingPermission: null,
+        runMode: effectiveMode,
+        runModeBySession: {
+          ...state.runModeBySession,
+          [sessionId]: effectiveMode,
+        },
+        lifecycleState: nextInitialState,
+        lifecycleStateBySession: {
+          ...state.lifecycleStateBySession,
+          [sessionId]: nextInitialState,
+        },
       };
     });
 
     const activeModel = useModelConfigStore.getState().getActiveModel();
+    const confirmPrefs = useConfirmationStore.getState();
 
     try {
       await sendMessageStream({
@@ -329,552 +1006,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
         parentId: userMsgId,
         skillId,
         model: activeModel?.modelId || "deepseek-chat",
+        mode: effectiveMode,
+        permission_mode: confirmPrefs.permissionMode,
+        allow_ask_user: confirmPrefs.allowAskUser,
         api_key: activeModel?.apiKey || undefined,
         base_url: activeModel?.baseUrl || undefined,
         provider: activeModel?.provider || "openai",
         max_tokens: activeModel?.maxTokens || undefined,
-        context_window: activeModel?.contextWindow || 1048576,
+        context_window: activeModel?.contextWindow || undefined,
         signal: controller.signal,
-        onEvent: (msg) => {
-          if (controller.signal.aborted) return;
-
-          switch (msg.event) {
-            case "session_info":
-              break;
-
-            case "tool_call_start":
-            case "tool_start": {
-              const data = msg.data;
-              if (data?.name && typeof data.name === "string" && data.name.includes("dispatch_subagent")) {
-                try {
-                  const wb = useWorkbenchStore.getState();
-                  wb.switchSessionWorkbench(sessionId);
-                  const agentType = data.args?.agent_type === "verify" ? "verify" : "explore";
-                  const rawPrompt = data.args?.task_prompt;
-                  const taskPrompt = typeof rawPrompt === "string" ? rawPrompt : "正在接收子代理任务参数...";
-                  const rawId = data.tool_call_id || "";
-                  const agentId = rawId
-                    ? (rawId.startsWith("agent-") ? rawId : `agent-${rawId}`)
-                    : `agent-${Date.now()}`;
-                  wb.openSubagentPanel(sessionId);
-                  wb.addAgentInstance(agentId, agentType, taskPrompt, sessionId);
-                  useUIStore.getState().openRightSidebar();
-                } catch (e) {
-                  console.warn("[useChatStore] Failed to init subagent instance:", e);
-                }
-              }
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: list.map((m) => {
-                      if (m.id !== aiMsgId) return m;
-                      const toolItem: ToolCallItem = {
-                        id: data.tool_call_id,
-                        name: data.name,
-                        args: data.args || data.arguments || {},
-                        status: "running",
-                      };
-                      return {
-                        ...m,
-                        raw_tool_calls: [...(m.raw_tool_calls || []), toolItem],
-                      };
-                    }),
-                  },
-                };
-              });
-              break;
-            }
-
-            case "workbench_preview": {
-              const data = msg.data;
-              if (data?.url) {
-                try {
-                  // 静默记录预览 URL，作用于当前会话独立的右侧工作台
-                  useWorkbenchStore.getState().setPreviewUrl(data.url, false, sessionId);
-                } catch (e) {
-                  console.warn("[useChatStore] Failed to update previewUrl from workbench_preview:", e);
-                }
-              }
-              break;
-            }
-
-            case "workbench_file_change": {
-              const data = msg.data;
-              if (data?.path) {
-                try {
-                  const filePath = data.path;
-                  useWorkbenchStore.getState().recordFileDiff({
-                    path: filePath,
-                    name: data.name || filePath.split("/").pop() || "modified_file",
-                    additions: data.additions || 0,
-                    deletions: data.deletions || 0,
-                    originalContent: data.original_content || "",
-                    modifiedContent: data.modified_content || "",
-                    unifiedDiff: data.unified_diff || data.diff || "",
-                  }, sessionId);
-                  useWorkbenchStore.getState().triggerPreviewReload();
-                  if (typeof window !== "undefined") {
-                    window.dispatchEvent(new CustomEvent("genesis:workspace-refresh"));
-                  }
-                } catch (e) {
-                  console.warn("[useChatStore] Failed to process workbench_file_change:", e);
-                }
-              }
-              break;
-            }
-
-            case "tool_call_result":
-            case "tool_result": {
-              const data = msg.data;
-              if (
-                typeof window !== "undefined" &&
-                typeof data.name === "string" &&
-                data.name.startsWith("workspace__") &&
-                !data.is_error
-              ) {
-                window.dispatchEvent(new CustomEvent("genesis:workspace-refresh"));
-                const resObj = (data.result || data.output) as Record<string, any> | undefined;
-                if (resObj && typeof resObj === "object") {
-                  if (resObj.diff) {
-                    try {
-                      const filePath = resObj.path || "";
-                      useWorkbenchStore.getState().recordFileDiff({
-                        path: filePath,
-                        name: resObj.name || filePath.split("/").pop() || "modified_file",
-                        additions: resObj.additions || 0,
-                        deletions: resObj.deletions || 0,
-                        originalContent: resObj.original_content || "",
-                        modifiedContent: resObj.modified_content || "",
-                        unifiedDiff: resObj.diff || "",
-                      }, sessionId);
-                      useWorkbenchStore.getState().triggerPreviewReload();
-                    } catch (e) {
-                      console.warn("[useChatStore] Failed to record diff to workbench:", e);
-                    }
-                  }
-                  const targetUrl = resObj.url || resObj.detected_url;
-                  if (targetUrl) {
-                    try {
-                      useWorkbenchStore.getState().setPreviewUrl(targetUrl, false, sessionId);
-                    } catch (e) {
-                      console.warn("[useChatStore] Failed to set previewUrl from tool result:", e);
-                    }
-                  }
-                  if (resObj.status === "running_in_background" && resObj.pid) {
-                    try {
-                      useProcessStore.getState().addProcess({
-                        pid: resObj.pid,
-                        command: resObj.command || "unknown",
-                        session_id: sessionId,
-                      });
-                    } catch (e) {
-                      console.warn("[useChatStore] Failed to register background process:", e);
-                    }
-                  }
-                }
-              }
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: list.map((m) => {
-                      if (m.id !== aiMsgId) return m;
-                      const tools = (m.raw_tool_calls || []).map((tc) => {
-                        const isMatch =
-                          tc.id === data.tool_call_id ||
-                          tc.id === data.agent_id ||
-                          (data.agent_id && `agent-${tc.id}` === data.agent_id) ||
-                          (data.tool_call_id && `agent-${data.tool_call_id}` === tc.id);
-                        return isMatch
-                          ? {
-                              ...tc,
-                              output: (data.output || data.result) as unknown as string | Record<string, unknown>,
-                              latency_ms: data.latency_ms,
-                              status: data.is_error ? ("failed" as const) : ("success" as const),
-                            }
-                          : tc;
-                      });
-                      return { ...m, raw_tool_calls: tools };
-                    }),
-                  },
-                };
-              });
-              break;
-            }
-
-
-            case "reasoning_delta": {
-              const data = msg.data;
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: list.map((m) =>
-                      m.id === aiMsgId
-                        ? {
-                            ...m,
-                            reasoning_content:
-                              (m.reasoning_content || "") + data.delta,
-                          }
-                        : m
-                    ),
-                  },
-                };
-              });
-              break;
-            }
-
-            case "text_delta": {
-              const data = msg.data;
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: list.map((m) =>
-                      m.id === aiMsgId
-                        ? { ...m, content: (m.content || "") + data.delta }
-                        : m
-                    ),
-                  },
-                };
-              });
-              break;
-            }
-
-            case "usage": {
-              const data = msg.data;
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: list.map((m) =>
-                      m.id === aiMsgId
-                        ? {
-                            ...m,
-                            metrics: {
-                              latency_ms: data.latency_ms,
-                              tokens: data.tokens,
-                            },
-                          }
-                        : m
-                    ),
-                  },
-                };
-              });
-              break;
-            }
-
-            case "session_title_updated": {
-              const data = msg.data;
-              if (data?.title) {
-                const targetSid = data.session_id || sessionId;
-                useSessionStore
-                  .getState()
-                  .updateSessionDetails(targetSid, { title: data.title });
-              }
-              break;
-            }
-
-            case "permission_request": {
-              const data = msg.data;
-              set({
-                pendingPermission: {
-                  sessionId,
-                  approvalId: data.approval_id || data.tool_call_id || "",
-                  toolName: data.tool_name || data.name || "",
-                  arguments: (data.arguments || data.args || {}) as Record<string, any>,
-                  reason:
-                    data.reason ||
-                    "该工具涉及高危文件写操作或命令执行，需用户确认授权",
-                },
-              });
-              break;
-            }
-
-            case "mid_task_steered": {
-              const data = msg.data as { content?: string };
-              const curAiId = get().activeStreamingMessageId;
-              const steerText = data?.content || "";
-
-              const currentQueue = get().steeringQueueBySession[sessionId] || [];
-              const matchedItem = currentQueue.find((item) => item.content === steerText) || currentQueue[0];
-              const remainingQueue = matchedItem
-                ? currentQueue.filter((item) => item.id !== matchedItem.id)
-                : currentQueue;
-
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                // 1. 将前序 assistant 标记为 success
-                const updatedList = list.map((m) => {
-                  if (m.id === curAiId) {
-                    return { ...m, status: "success" as const };
-                  }
-                  return m;
-                });
-
-                // 2. 将出队的插话转为正式的已生效 UserMessage 气泡
-                const steerUserMsg: Message = {
-                  id: `user_steered_${Date.now()}`,
-                  session_id: sessionId,
-                  role: "user",
-                  content: steerText || matchedItem?.content || "实时转向指令",
-                  status: "success",
-                  created_at: new Date().toISOString(),
-                };
-
-                // 3. 为模型接力转向开启新的 AI assistant 消息气泡接收后续流式输出
-                const nextAiId = `ai_steered_${Date.now()}`;
-                const nextAiMsg: Message = {
-                  id: nextAiId,
-                  session_id: sessionId,
-                  role: "assistant",
-                  content: "",
-                  raw_tool_calls: [],
-                  status: "streaming",
-                  created_at: new Date().toISOString(),
-                };
-
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: [...updatedList, steerUserMsg, nextAiMsg],
-                  },
-                  steeringQueueBySession: {
-                    ...state.steeringQueueBySession,
-                    [sessionId]: remainingQueue,
-                  },
-                  activeStreamingMessageId: nextAiId,
-                };
-              });
-              break;
-            }
-
-            case "workbench_todos": {
-              const data = msg.data as { session_id?: string; todos?: Array<{ id: string; content: string; status: "pending" | "in_progress" | "completed" }> };
-              if (data?.todos && data.session_id) {
-                useTodoStore.getState().setTodos(data.session_id, data.todos);
-              }
-              break;
-            }
-
-            case "subagent_progress": {
-              const data = msg.data as {
-                agent_id?: string;
-                agent_type?: string;
-                task_prompt?: string;
-                step?: number;
-                max_steps?: number;
-                status?: string;
-                tool_calls?: string[];
-                summary_preview?: string;
-                thinking?: string;
-                thinking_content?: string;
-              };
-              if (!data) break;
-              const wb = useWorkbenchStore.getState();
-              wb.switchSessionWorkbench(sessionId);
-
-              // 确定 agent_id：优先用后端返回的并做前缀规范化
-              let agentId = data.agent_id || "unknown";
-              if (agentId !== "unknown" && !agentId.startsWith("agent-")) {
-                agentId = `agent-${agentId}`;
-              }
-              const agentType = (data.agent_type === "verify" ? "verify" : "explore") as "explore" | "verify";
-
-              // 确保面板和实例存在（流式更新时不抢占用户自选的 Tab 焦点）
-              wb.openSubagentPanel(sessionId, false);
-              const panel = wb.tabs.find(t => t.kind === "subagent-panel") as any;
-              if (panel && !panel.agents?.some((a: any) => a.id === agentId)) {
-                wb.addAgentInstance(agentId, agentType, data.task_prompt || "", sessionId);
-              }
-
-              // 更新 task_prompt 与思考过程 thinkingContent
-              const thinking = data.thinking || data.thinking_content || "";
-              const instanceUpdates: Partial<SubagentInstance> = {};
-              if (data.task_prompt) instanceUpdates.taskPrompt = data.task_prompt;
-              if (thinking) instanceUpdates.thinkingContent = thinking;
-              if (Object.keys(instanceUpdates).length > 0) {
-                wb.updateAgentInstance(agentId, instanceUpdates, sessionId);
-              }
-
-              if (data.status === "executing_tools" && data.step) {
-                const toolName = data.tool_calls?.[0] || "unknown";
-                wb.addAgentStep(agentId, {
-                  index: data.step,
-                  toolName,
-                  status: "running",
-                  preview: data.summary_preview,
-                  thinking: thinking || undefined,
-                  timestamp: new Date().toISOString(),
-                }, sessionId);
-              } else if (data.status === "step_done" && data.step) {
-                wb.addAgentStep(agentId, {
-                  index: data.step,
-                  toolName: data.tool_calls?.[0] || "unknown",
-                  status: "done",
-                  preview: data.summary_preview,
-                  thinking: thinking || undefined,
-                  timestamp: new Date().toISOString(),
-                }, sessionId);
-              } else if (data.status === "completed") {
-                wb.updateAgentInstance(agentId, {
-                  status: "completed",
-                  summary: data.summary_preview,
-                  ...(thinking ? { thinkingContent: thinking } : {}),
-                }, sessionId);
-              } else if (data.status === "failed") {
-                wb.updateAgentInstance(agentId, {
-                  status: "failed",
-                  summary: data.summary_preview,
-                }, sessionId);
-              }
-
-              // 同步反哺当前消息流中的 raw_tool_calls，确保左侧时间线立即停止转圈并获得准确任务描述与状态
-              const rawTcId = agentId.replace(/^agent-/, "");
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                const hasMatchingTool = list.some((m) =>
-                  m.raw_tool_calls?.some((tc) => tc.id === agentId || tc.id === rawTcId)
-                );
-                if (!hasMatchingTool) return state;
-
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: list.map((m) => {
-                      if (!m.raw_tool_calls?.some((tc) => tc.id === agentId || tc.id === rawTcId)) {
-                        return m;
-                      }
-                      return {
-                        ...m,
-                        raw_tool_calls: m.raw_tool_calls.map((tc) => {
-                          if (tc.id !== agentId && tc.id !== rawTcId) return tc;
-                          const updatedStatus =
-                            data.status === "completed"
-                              ? ("success" as const)
-                              : data.status === "failed"
-                              ? ("failed" as const)
-                              : tc.status;
-                          return {
-                            ...tc,
-                            status: updatedStatus,
-                            output:
-                              data.summary_preview && (data.status === "completed" || data.status === "failed")
-                                ? { summary: data.summary_preview }
-                                : tc.output,
-                            args: {
-                              ...tc.args,
-                              ...(data.task_prompt ? { task_prompt: data.task_prompt } : {}),
-                              ...(data.agent_type ? { agent_type: data.agent_type } : {}),
-                            },
-                          };
-                        }),
-                      };
-                    }),
-                  },
-                };
-              });
-
-              // 确保右栏打开并聚焦面板
-              useUIStore.getState().openRightSidebar();
-              break;
-            }
-
-            case "done": {
-              const data = msg.data;
-              const durationMs =
-                data?.duration_ms !== undefined
-                  ? Number(data.duration_ms)
-                  : Math.max(100, Date.now() - turnStartTime);
-              const tokensObj = data?.tokens as { input?: number; output?: number } | undefined;
-              const totalTokens = tokensObj
-                ? (tokensObj.input || 0) + (tokensObj.output || 0)
-                : undefined;
-
-              // 兜底保障：整轮对话已结束，收拢当前会话所有仍处于 running 状态的 subagent 实例
-              cleanupRunningSubagents(sessionId, "completed");
-
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                const nextStreamingSessions = { ...state.streamingSessions };
-                delete nextStreamingSessions[sessionId];
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: list.map((m) =>
-                      m.id === aiMsgId
-                        ? {
-                            ...m,
-                            status: "success",
-                            created_at: new Date().toISOString(),
-                            metrics: {
-                              latency_ms: durationMs,
-                              tokens: totalTokens,
-                            },
-                            raw_tool_calls: (m.raw_tool_calls || []).map((tc) => ({
-                              ...tc,
-                              status: tc.status === "failed" ? "failed" : "success",
-                            })),
-                          }
-                        : m
-                    ),
-                  },
-                  ...computeStreamingState(nextStreamingSessions),
-                  pendingPermission: state.pendingPermission?.sessionId === sessionId ? null : state.pendingPermission,
-                };
-              });
-
-              // 正常完成的 FIFO 自动出队：检查当前 session 的 steeringQueueBySession
-              const currentQueue = get().steeringQueueBySession[sessionId] || [];
-              if (currentQueue.length > 0) {
-                const nextItem = currentQueue[0];
-                get().removeSteeringItem(sessionId, nextItem.id);
-                setTimeout(() => {
-                  void get().sendStreamMessage(sessionId, nextItem.content);
-                }, 100);
-              }
-
-              break;
-            }
-
-            case "error": {
-              cleanupRunningSubagents(sessionId, "failed");
-              const data = msg.data;
-              set((state) => {
-                const list = state.messagesBySession[sessionId] || [];
-                const nextStreamingSessions = { ...state.streamingSessions };
-                delete nextStreamingSessions[sessionId];
-                return {
-                  messagesBySession: {
-                    ...state.messagesBySession,
-                    [sessionId]: list.map((m) =>
-                      m.id === aiMsgId
-                        ? {
-                            ...m,
-                            status: "failed",
-                            content:
-                              (m.content || "") +
-                              `\n\n*(生成中断: ${data.message || "服务异常"})*`,
-                          }
-                        : m
-                    ),
-                  },
-                  ...computeStreamingState(nextStreamingSessions),
-                  pendingPermission: state.pendingPermission?.sessionId === sessionId ? null : state.pendingPermission,
-                };
-              });
-              break;
-            }
-          }
+        useDispatcher: true,
+        dispatchContext: {
+          sessionId,
+          messageId: aiMsgId,
+          turnStartTime,
         },
       });
     } catch (err: unknown) {
+      // 先刷新尚未落盘的 rAF 缓冲，避免最后几帧文本丢失
+      try {
+        const { streamDispatcher } = await import("@/services/streamDispatcher");
+        streamDispatcher.flush();
+      } catch {}
+
+      const activeAiId = get().getActiveStreamingMessageId(sessionId) || aiMsgId;
+
       if (controller.signal.aborted) {
         // 用户手动停止，将所有进行中的 todo 重置为 pending，防止界面继续 loading 转圈
         try {
@@ -883,7 +1039,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (currentTodos.some((t) => t.status === "in_progress")) {
             todoStore.setTodos(
               sessionId,
-              currentTodos.map((t) => (t.status === "in_progress" ? { ...t, status: "pending" } : t))
+              currentTodos.map((t) =>
+                t.status === "in_progress" ? { ...t, status: "pending" } : t
+              )
             );
           }
         } catch {}
@@ -894,11 +1052,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // 用户手动停止，保留已有片段
         set((state) => {
           const list = state.messagesBySession[sessionId] || [];
+          const syncGlobal = isSessionCurrentlyActive(sessionId);
           return {
             messagesBySession: {
               ...state.messagesBySession,
               [sessionId]: list.map((m) =>
-                m.id === aiMsgId
+                m.id === activeAiId
                   ? {
                       ...m,
                       status: "success",
@@ -909,6 +1068,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   : m
               ),
             },
+            ...(syncGlobal ? { lifecycleState: AgentLifecycleState.INTERRUPTED } : {}),
+            lifecycleStateBySession: {
+              ...state.lifecycleStateBySession,
+              [sessionId]: AgentLifecycleState.INTERRUPTED,
+            },
           };
         });
       } else {
@@ -917,11 +1081,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         set((state) => {
           const list = state.messagesBySession[sessionId] || [];
+          const syncGlobal = isSessionCurrentlyActive(sessionId);
           return {
             messagesBySession: {
               ...state.messagesBySession,
               [sessionId]: list.map((m) =>
-                m.id === aiMsgId
+                m.id === activeAiId
                   ? {
                       ...m,
                       status: "failed",
@@ -932,22 +1097,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   : m
               ),
             },
+            ...(syncGlobal ? { lifecycleState: AgentLifecycleState.INTERRUPTED } : {}),
+            lifecycleStateBySession: {
+              ...state.lifecycleStateBySession,
+              [sessionId]: AgentLifecycleState.INTERRUPTED,
+            },
           };
         });
       }
     } finally {
-      set((state) => {
-        const nextStreamingSessions = { ...state.streamingSessions };
-        delete nextStreamingSessions[sessionId];
-        return {
-          ...computeStreamingState(nextStreamingSessions),
-          pendingPermission: state.pendingPermission?.sessionId === sessionId ? null : state.pendingPermission,
-        };
-      });
+      if (get().streamingSessions[sessionId]) {
+        set((state) => {
+          const nextStreamingSessions = { ...state.streamingSessions };
+          delete nextStreamingSessions[sessionId];
+          return {
+            ...computeStreamingState(nextStreamingSessions),
+          };
+        });
+      }
     }
   },
 
   sendSteerMessage: async (sessionId: string, content: string) => {
+    // Chat Override：发送 steering 前乐观关闭当前会话挂起气泡与纠偏横幅
+    useConfirmationStore.getState().resolveAllForSession(sessionId);
+
     const steerId = `steer_${Date.now()}`;
     const steerMsg: Message = {
       id: steerId,
@@ -980,20 +1154,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  respondPermission: async (approved: boolean) => {
-    const { pendingPermission } = get();
-    if (!pendingPermission) return;
-    const { sessionId, approvalId } = pendingPermission;
-    try {
-      await approveToolCallApi(sessionId, approvalId, approved);
-    } catch (err) {
-      console.error("[useChatStore] Failed to send approval response:", err);
-    } finally {
-      set({ pendingPermission: null });
-    }
-  },
-
   stopGeneration: async (sessionId: string) => {
+    useConfirmationStore.getState().resolveAllForSession(sessionId);
+    try {
+      const { streamDispatcher } = await import("@/services/streamDispatcher");
+      streamDispatcher.flush();
+    } catch {}
     const sessionStream = get().streamingSessions[sessionId];
     if (sessionStream?.abortController) {
       sessionStream.abortController.abort();
@@ -1027,13 +1193,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
       const nextStreamingSessions = { ...state.streamingSessions };
       delete nextStreamingSessions[sessionId];
+      const syncGlobal = isSessionCurrentlyActive(sessionId);
       return {
         messagesBySession: {
           ...state.messagesBySession,
           [sessionId]: updatedList,
         },
         ...computeStreamingState(nextStreamingSessions),
-        pendingPermission: state.pendingPermission?.sessionId === sessionId ? null : state.pendingPermission,
+        ...(syncGlobal ? { lifecycleState: AgentLifecycleState.INTERRUPTED } : {}),
+        lifecycleStateBySession: {
+          ...state.lifecycleStateBySession,
+          [sessionId]: AgentLifecycleState.INTERRUPTED,
+        },
       };
     });
     await stopGenerationApi(sessionId);
@@ -1044,6 +1215,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // 关键改造：切走正在推流的会话时，不再调用 stopGeneration！
     // 允许上一会话继续在后台接收 SSE 流并写入 messagesBySession，实现完全多会话并发。
     if (newSessionId) {
+      set((state) => ({
+        runMode: state.runModeBySession[newSessionId] || "act",
+        lifecycleState:
+          state.lifecycleStateBySession[newSessionId] || AgentLifecycleState.IDLE,
+        proposedPlan: state.proposedPlanBySession[newSessionId] || null,
+        contextTelemetry: state.contextTelemetryBySession[newSessionId] || null,
+      }));
       fetchMessages(newSessionId);
       useWorkbenchStore.getState().switchSessionWorkbench(newSessionId);
     }
@@ -1110,7 +1288,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const index = current.findIndex((m) => m.id === messageId);
     if (index === -1) return;
 
-    const assistantMsg = current[index];
     // 找到该 AI 消息的对应用户提问节点
     const parentUserMsg = current
       .slice(0, index)

@@ -8,6 +8,7 @@ import { ToolCallAccordion } from "./ToolCallAccordion";
 interface ToolCallsGroupProps {
   toolCalls: ToolCallItem[];
   isStreaming?: boolean;
+  sessionId?: string;
 }
 
 // 提取工具的人类可读摘要与语义图标
@@ -40,7 +41,7 @@ function getToolSummary(name: string, args?: Record<string, unknown>): { icon: L
   return { icon: Terminal, label: name };
 }
 
-export function ToolCallsGroup({ toolCalls, isStreaming }: ToolCallsGroupProps) {
+export function ToolCallsGroup({ toolCalls, isStreaming, sessionId }: ToolCallsGroupProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   if (!toolCalls || toolCalls.length === 0) return null;
@@ -52,6 +53,7 @@ export function ToolCallsGroup({ toolCalls, isStreaming }: ToolCallsGroupProps) 
       <ToolCallAccordion
         toolCall={tc}
         isStreaming={isStreaming}
+        sessionId={sessionId}
         toolResult={
           tc.output !== undefined
             ? {
@@ -150,6 +152,7 @@ export function ToolCallsGroup({ toolCalls, isStreaming }: ToolCallsGroupProps) 
               key={tc.id}
               toolCall={tc}
               isStreaming={isStreaming}
+              sessionId={sessionId}
               toolResult={
                 tc.output !== undefined
                   ? {

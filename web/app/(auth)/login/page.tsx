@@ -271,6 +271,8 @@ function LoginForm() {
 
   return (
     <div className="relative min-h-screen w-screen flex items-center justify-center bg-[#090A0F] text-[#ECECEE] px-4 select-none overflow-hidden font-sans">
+      {/* 桌面端顶部可拖动区域 */}
+      <div className="absolute top-0 left-0 right-0 h-10 app-drag z-50 pointer-events-auto" />
       {/* 物理弹簧网格与光晕鼠标互动背景 */}
       <InteractiveGridBackground />
       {/* 柔和暗场渐晕，保证中心卡片区域对比度极致纯净 */}

@@ -3,6 +3,7 @@
 import React from "react";
 import { Palette, Check, Sun, Moon, Monitor } from "lucide-react";
 import { useSettingsStore } from "@/stores/useSettingsStore";
+import { StylePreferenceSwitcher } from "@/components/agent-confirmation/StylePreferenceSwitcher";
 
 export function AppearanceTab() {
   const { density, setDensity, serifReading, setSerifReading } =
@@ -116,6 +117,14 @@ export function AppearanceTab() {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* 确认气泡视觉风格 */}
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-[#8E8E93] tracking-wide">
+          智能体确认气泡风格
+        </h3>
+        <StylePreferenceSwitcher sections={["style"]} />
       </div>
     </div>
   );

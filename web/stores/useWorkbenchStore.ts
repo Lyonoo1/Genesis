@@ -36,6 +36,45 @@ export interface DiffFileItem {
   originalContent: string;
   modifiedContent: string;
   unifiedDiff?: string;
+  patchId?: string;
+  patch_id?: string;
+  status?: "pending" | "accepted" | "rejected";
+}
+
+export interface PlanStateData {
+  planId: string;
+  plan: string;
+  status: "awaiting_approval" | "approved" | "rejected";
+  step?: number;
+}
+
+export type SubagentMode = "explore" | "verify" | "code_worker";
+
+export type SubagentStatus = "running" | "completed" | "failed" | "terminated";
+
+export interface BatchedSubagentUpdate {
+  agentId: string;
+  parentCallId?: string;
+  agentType?: SubagentMode;
+  writeScope?: string[];
+  taskPrompt?: string;
+  thinkingDelta?: string;
+  thinking?: string;
+  summaryDelta?: string;
+  currentStep?: number;
+  maxSteps?: number;
+  step?: {
+    index: number;
+    toolCallId?: string;
+    toolName: string;
+    status: "running" | "done";
+    preview?: string;
+    thinking?: string;
+  };
+  status?: SubagentStatus;
+  summary?: string;
+  errorMessage?: string;
+  errorCode?: string;
 }
 
 export interface ChangesTabConfig {
@@ -68,6 +107,7 @@ export interface BrowserTabConfig {
 
 export interface SubagentStep {
   index: number;
+  toolCallId?: string;
   toolName: string;
   toolArgs?: Record<string, unknown>;
   status: "running" | "done";
@@ -78,14 +118,22 @@ export interface SubagentStep {
 
 export interface SubagentInstance {
   id: string;
-  agentType: "explore" | "verify";
+  parentCallId?: string;
+  agentType: SubagentMode;
+  writeScope?: string[];
   displayName: string;
   taskPrompt: string;
-  status: "running" | "completed" | "failed";
+  status: SubagentStatus;
+  currentStep?: number;
+  maxSteps?: number;
   steps: SubagentStep[];
   summary?: string;
+  errorMessage?: string;
+  errorCode?: string;
   thinkingContent?: string;
   createdAt: string;
+  startedAtMs?: number;
+  endedAtMs?: number;
 }
 
 export interface SubagentPanelTabConfig {
@@ -160,7 +208,12 @@ export function inferAgentDisplayName(
   const prompt = (taskPrompt || "").toLowerCase();
   let baseName = "🔍 代码库探索者";
 
-  if (agentType === "verify") {
+  if (agentType === "code_worker") {
+    if (prompt.includes("前端") || prompt.includes("component") || prompt.includes("ui") || prompt.includes("页面")) baseName = "🛠️ 前端实现工程师";
+    else if (prompt.includes("后端") || prompt.includes("api") || prompt.includes("server") || prompt.includes("服务")) baseName = "🛠️ 后端实现工程师";
+    else if (prompt.includes("test") || prompt.includes("测试")) baseName = "🛠️ 测试编写工程师";
+    else baseName = "🛠️ 代码实现工程师";
+  } else if (agentType === "verify") {
     if (prompt.includes("test") || prompt.includes("测试")) baseName = "✅ 测试验证工程师";
     else if (prompt.includes("性能") || prompt.includes("performance")) baseName = "✅ 性能诊断工程师";
     else if (prompt.includes("bug") || prompt.includes("error") || prompt.includes("debug") || prompt.includes("排查")) baseName = "✅ 问题排查工程师";
@@ -210,6 +263,7 @@ export interface SessionWorkbenchData {
   previewUrl: string;
   allDiffFiles: DiffFileItem[];
   cachedSubagents?: SubagentInstance[];
+  activePlanState?: PlanStateData | null;
 }
 
 export function createDefaultSessionWorkbench(
@@ -233,6 +287,7 @@ export function createDefaultSessionWorkbench(
     previewUrl: "genesis://newtab",
     allDiffFiles: [],
     cachedSubagents: [],
+    activePlanState: null,
   };
 }
 
@@ -253,42 +308,73 @@ export function extractSubagentsFromMessages(sessionId: string): SubagentInstanc
   for (const m of messages) {
     if (!m.raw_tool_calls || !Array.isArray(m.raw_tool_calls)) continue;
     for (const tc of m.raw_tool_calls) {
-      if (tc.name && tc.name.includes("dispatch_subagent")) {
-        const rawId = tc.id || "";
-        const agentId = rawId ? (rawId.startsWith("agent-") ? rawId : `agent-${rawId}`) : `agent-${Date.now()}`;
-        if (result.some((a) => a.id === agentId)) continue;
+      const isSubagentTool =
+        tc.name &&
+        (tc.name.includes("dispatch_subagent") || tc.name.includes("spawn_agent"));
+      if (isSubagentTool) {
+        let outObj: any = tc.output;
+        if (typeof outObj === "string") {
+          try {
+            outObj = JSON.parse(outObj);
+          } catch {
+            outObj = { summary: tc.output };
+          }
+        }
 
-        const agentType = (tc.args?.agent_type === "verify" ? "verify" : "explore") as "explore" | "verify";
-        const taskPrompt = typeof tc.args?.task_prompt === "string" ? tc.args.task_prompt : "";
+        const rawId = tc.id || "";
+        const returnedAgentId =
+          typeof outObj === "object" && outObj !== null && typeof outObj.agent_id === "string"
+            ? outObj.agent_id
+            : null;
+        const agentId =
+          returnedAgentId ||
+          (rawId
+            ? rawId.startsWith("agent-") || rawId.startsWith("subagent_")
+              ? rawId
+              : `agent-${rawId}`
+            : `agent-${Date.now()}`);
+        if (result.some((a) => a.id === agentId || (rawId && a.parentCallId === rawId))) continue;
+
+        const rawMode = String(
+          tc.args?.mode || tc.args?.agent_type || outObj?.mode || "explore"
+        ).toLowerCase();
+        const agentType: SubagentMode =
+          rawMode === "code_worker"
+            ? "code_worker"
+            : rawMode === "verify"
+            ? "verify"
+            : "explore";
+        const taskPrompt =
+          typeof tc.args?.task === "string"
+            ? tc.args.task
+            : typeof tc.args?.task_prompt === "string"
+            ? tc.args.task_prompt
+            : "";
+        const rawScope = tc.args?.write_scope || outObj?.write_scope;
+        const writeScope = Array.isArray(rawScope)
+          ? rawScope.map((s: unknown) => String(s))
+          : undefined;
         const displayName = inferAgentDisplayName(agentType, taskPrompt, result, agentId);
 
         let summary: string | undefined = undefined;
         let steps: SubagentStep[] = [];
         let thinkingContent: string | undefined = undefined;
 
-        if (tc.output) {
-          let outObj: any = tc.output;
-          if (typeof outObj === "string") {
-            try {
-              outObj = JSON.parse(outObj);
-            } catch {
-              outObj = { summary: tc.output };
-            }
+        if (typeof outObj === "object" && outObj !== null) {
+          summary = outObj.summary || outObj.result || (outObj.success === false ? outObj.error : undefined);
+          if (Array.isArray(outObj.steps)) {
+            steps = outObj.steps;
           }
-          if (typeof outObj === "object" && outObj !== null) {
-            summary = outObj.summary || outObj.result || (outObj.success === false ? outObj.error : undefined);
-            if (Array.isArray(outObj.steps)) {
-              steps = outObj.steps;
-            }
-            if (outObj.thinking) {
-              thinkingContent = String(outObj.thinking);
-            }
+          if (outObj.thinking) {
+            thinkingContent = String(outObj.thinking);
           }
         }
 
         result.push({
           id: agentId,
+          parentCallId: rawId || undefined,
           agentType,
+          writeScope,
           displayName,
           taskPrompt,
           status: tc.status === "failed" ? "failed" : "completed",
@@ -317,6 +403,8 @@ interface WorkbenchState {
   activeTabId: string;
   previewUrl: string;
   allDiffFiles: DiffFileItem[];
+  activePlanState: PlanStateData | null;
+  terminalPtyBufferBySession: Record<string, string[]>;
 
   // 窗口全局布局属性 (全局共享)
   isFileTreeVisible: boolean;
@@ -383,10 +471,27 @@ interface WorkbenchState {
   openSubagentPanel: (sessionId?: string, autoFocus?: boolean) => string;
   addAgentInstance: (
     agentId: string,
-    agentType: "explore" | "verify",
+    agentType: SubagentMode,
     taskPrompt: string,
+    sessionId?: string,
+    meta?: {
+      parentCallId?: string;
+      writeScope?: string[];
+      maxSteps?: number;
+    }
+  ) => void;
+  bindSubagentId: (
+    parentCallId: string,
+    realAgentId: string,
+    meta?: {
+      agentType?: SubagentMode;
+      writeScope?: string[];
+      taskPrompt?: string;
+      status?: SubagentStatus;
+    },
     sessionId?: string
   ) => void;
+  markSubagentStopped: (agentId: string, sessionId?: string) => void;
   updateAgentInstance: (
     agentId: string,
     updates: Partial<SubagentInstance>,
@@ -394,6 +499,41 @@ interface WorkbenchState {
   ) => void;
   addAgentStep: (agentId: string, step: SubagentStep, sessionId?: string) => void;
   setActiveAgent: (agentId: string | null, sessionId?: string) => void;
+  setActivePlanState: (
+    planState: PlanStateData | null,
+    targetSessionId?: string
+  ) => void;
+  updateDiffStatus: (
+    patchIdOrPath: string,
+    status: "pending" | "accepted" | "rejected",
+    targetSessionId?: string,
+    fallbackFile?: DiffFileItem
+  ) => void;
+  acceptDiffPatch: (
+    target:
+      | string
+      | {
+          patch_id?: string;
+          path?: string;
+          file?: DiffFileItem;
+        },
+    targetSessionId?: string
+  ) => Promise<boolean>;
+  revertDiffPatch: (
+    params: {
+      patch_id?: string;
+      path?: string;
+      session_id?: string;
+      originalContent?: string;
+      file?: DiffFileItem;
+    },
+    targetSessionId?: string
+  ) => Promise<{ success: boolean; syncedToMemory: boolean; message?: string }>;
+  appendPtyBuffer: (ptySessionId: string, chunk: string) => void;
+  applyBatchedSubagentFrame: (
+    sessionId: string,
+    updates: BatchedSubagentUpdate[]
+  ) => void;
 }
 
 const DEFAULT_INITIAL_SESSION = "draft";
@@ -428,6 +568,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
               selectedFilePath: updated.selectedFilePath,
               previewUrl: updated.previewUrl,
               allDiffFiles: updated.allDiffFiles,
+              activePlanState: updated.activePlanState || null,
             };
           }
           return {
@@ -447,6 +588,8 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         previewUrl: initialDefaultData.previewUrl,
         reloadTrigger: 0,
         allDiffFiles: initialDefaultData.allDiffFiles,
+        activePlanState: null,
+        terminalPtyBufferBySession: {},
         tabs: initialDefaultData.tabs,
         activeTabId: initialDefaultData.activeTabId,
         isFileTreeVisible: true,
@@ -496,6 +639,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
             selectedFilePath: existing.selectedFilePath,
             previewUrl: existing.previewUrl,
             allDiffFiles: existing.allDiffFiles,
+            activePlanState: existing.activePlanState || null,
           }));
         },
 
@@ -512,7 +656,25 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           set((state) => {
             const draftData = state.workbenchBySession[DEFAULT_INITIAL_SESSION];
             if (draftData) {
-              const targetData = state.workbenchBySession[newSessionId] || draftData;
+              const baseData = state.workbenchBySession[newSessionId] || draftData;
+              const sharedPtyId = newSessionId.startsWith("pty_")
+                ? newSessionId
+                : `pty_${newSessionId}`;
+              const migratedTabs = baseData.tabs.map((t) => {
+                if (
+                  t.kind === "terminal" &&
+                  (!t.sessionId ||
+                    t.sessionId === "pty_default" ||
+                    t.sessionId === "pty_draft")
+                ) {
+                  return { ...t, sessionId: sharedPtyId, title: "共管终端" };
+                }
+                return t;
+              });
+              const targetData: SessionWorkbenchData = {
+                ...baseData,
+                tabs: migratedTabs,
+              };
               const nextMap = {
                 ...state.workbenchBySession,
                 [newSessionId]: targetData,
@@ -527,6 +689,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
                 selectedFilePath: targetData.selectedFilePath,
                 previewUrl: targetData.previewUrl,
                 allDiffFiles: targetData.allDiffFiles,
+                activePlanState: targetData.activePlanState || null,
               };
             }
             return {};
@@ -596,11 +759,12 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           const { tabs } = get();
           const targetTab = tabs.find((t) => t.id === id);
 
-          // 关闭终端标签页时，彻底销毁终端会话并杀死其下所有进程
+          // 关闭独立终端标签页 (term-*) 时彻底销毁进程；共管终端 (pty_*) 仅关闭视图，保留 Agent 后台 PTY 会话
           if (
             targetTab &&
             targetTab.kind === "terminal" &&
-            targetTab.sessionId
+            targetTab.sessionId &&
+            !targetTab.sessionId.startsWith("pty_")
           ) {
             deleteTerminalSession(targetTab.sessionId).catch((err) => {
               console.warn("[closeTab] 终止终端进程失败或已关闭:", err);
@@ -692,6 +856,19 @@ export const useWorkbenchStore = create<WorkbenchState>()(
                 ),
               };
             } else if (tool === "terminal") {
+              const sid = get().activeSessionId || DEFAULT_INITIAL_SESSION;
+              const sharedPtyId =
+                sid && sid !== DEFAULT_INITIAL_SESSION
+                  ? sid.startsWith("pty_")
+                    ? sid
+                    : `pty_${sid}`
+                  : "pty_default";
+              const alreadyHasShared = data.tabs.some(
+                (t) => t.kind === "terminal" && t.sessionId === sharedPtyId
+              );
+              const nextTerminalSid = alreadyHasShared
+                ? `term-${Date.now()}`
+                : sharedPtyId;
               return {
                 activeSection: "terminal",
                 tabs: data.tabs.map((t) =>
@@ -699,8 +876,8 @@ export const useWorkbenchStore = create<WorkbenchState>()(
                     ? {
                         id: tabId,
                         kind: "terminal" as const,
-                        title: "终端",
-                        sessionId: `term-${Date.now()}`,
+                        title: alreadyHasShared ? "终端" : "共管终端",
+                        sessionId: nextTerminalSid,
                         closable: true,
                       }
                     : t
@@ -878,8 +1055,23 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         },
 
         openTerminalTab: (sessionId, title) => {
-          const finalSessionId = sessionId || `term-${Date.now()}`;
-          const finalTitle = title || "终端";
+          const activeSid = get().activeSessionId || DEFAULT_INITIAL_SESSION;
+          const defaultSharedPty =
+            activeSid && activeSid !== DEFAULT_INITIAL_SESSION
+              ? activeSid.startsWith("pty_")
+                ? activeSid
+                : `pty_${activeSid}`
+              : "pty_default";
+          const existingSharedTab = !sessionId
+            ? get().tabs.find(
+                (t) => t.kind === "terminal" && t.sessionId === defaultSharedPty
+              )
+            : undefined;
+          const finalSessionId =
+            sessionId ||
+            (existingSharedTab ? `term-${Date.now()}` : defaultSharedPty);
+          const finalTitle =
+            title || (finalSessionId === defaultSharedPty ? "共管终端" : "终端");
           const newTab: TerminalTabConfig = {
             id: `tab-term-${Date.now()}`,
             kind: "terminal",
@@ -966,11 +1158,26 @@ export const useWorkbenchStore = create<WorkbenchState>()(
 
         recordFileDiff: (file, targetSessionId) => {
           mutateSession((data) => {
+            const incomingPatchId = file.patchId || file.patch_id;
             const idx = data.allDiffFiles.findIndex((f) => f.path === file.path);
+            const existingFile = idx >= 0 ? data.allDiffFiles[idx] : undefined;
+            const effectivePatchId =
+              incomingPatchId || existingFile?.patchId || existingFile?.patch_id;
+
+            const normalizedFile: DiffFileItem = {
+              ...(existingFile || {}),
+              ...file,
+              patchId: effectivePatchId,
+              patch_id: effectivePatchId,
+              status: file.status || "pending",
+            };
+
             const nextFiles =
               idx >= 0
-                ? data.allDiffFiles.map((f, i) => (i === idx ? file : f))
-                : [...data.allDiffFiles, file];
+                ? data.allDiffFiles.map((f, i) =>
+                    i === idx ? normalizedFile : f
+                  )
+                : [...data.allDiffFiles, normalizedFile];
 
             const existingChanges = data.tabs.find(
               (t) => t.kind === "changes"
@@ -1002,6 +1209,418 @@ export const useWorkbenchStore = create<WorkbenchState>()(
               return { allDiffFiles: nextFiles };
             }
           }, targetSessionId);
+        },
+
+        updateDiffStatus: (patchIdOrPath, status, targetSessionId, fallbackFile) => {
+          mutateSession((data) => {
+            let matchedAny = false;
+            const nextFiles = data.allDiffFiles.map((f) => {
+              if (
+                f.path === patchIdOrPath ||
+                f.patchId === patchIdOrPath ||
+                f.patch_id === patchIdOrPath ||
+                (fallbackFile?.path && f.path === fallbackFile.path)
+              ) {
+                matchedAny = true;
+                const resolvedPatchId =
+                  f.patchId ||
+                  f.patch_id ||
+                  fallbackFile?.patchId ||
+                  fallbackFile?.patch_id;
+                return {
+                  ...f,
+                  ...(resolvedPatchId
+                    ? { patchId: resolvedPatchId, patch_id: resolvedPatchId }
+                    : {}),
+                  status,
+                };
+              }
+              return f;
+            });
+
+            // 若历史会话尚未将该变更写入 allDiffFiles，自动 upsert 以确保所有视图状态双向实时同步
+            if (!matchedAny && fallbackFile && fallbackFile.path) {
+              const resolvedPatchId =
+                fallbackFile.patchId || fallbackFile.patch_id;
+              nextFiles.push({
+                ...fallbackFile,
+                ...(resolvedPatchId
+                  ? { patchId: resolvedPatchId, patch_id: resolvedPatchId }
+                  : {}),
+                status,
+              });
+            }
+
+            const existingChanges = data.tabs.find((t) => t.kind === "changes") as ChangesTabConfig | undefined;
+            if (existingChanges) {
+              return {
+                allDiffFiles: nextFiles,
+                tabs: data.tabs.map((t) => (t.id === existingChanges.id ? { ...t, diffFiles: nextFiles } : t)),
+              };
+            }
+            return { allDiffFiles: nextFiles };
+          }, targetSessionId);
+        },
+
+        acceptDiffPatch: async (target, targetSessionId) => {
+          try {
+            const { acceptPatchApi } = await import("@/lib/api/chat");
+            const sid = targetSessionId || get().activeSessionId || DEFAULT_INITIAL_SESSION;
+            const sessionDiffs =
+              get().workbenchBySession[sid]?.allDiffFiles ||
+              (sid === get().activeSessionId ? get().allDiffFiles : []) ||
+              [];
+
+            const isObj = typeof target === "object" && target !== null;
+            const inputPatchId = isObj
+              ? target.patch_id || target.file?.patchId || target.file?.patch_id
+              : undefined;
+            const inputPath = isObj
+              ? target.path || target.file?.path
+              : undefined;
+            const lookupKey = isObj
+              ? inputPatchId || inputPath || ""
+              : target;
+            const fallbackFile = isObj ? target.file : undefined;
+
+            const matched = sessionDiffs.find(
+              (f) =>
+                (inputPatchId && (f.patchId === inputPatchId || f.patch_id === inputPatchId)) ||
+                (inputPath && f.path === inputPath) ||
+                f.patchId === lookupKey ||
+                f.patch_id === lookupKey ||
+                f.path === lookupKey
+            );
+
+            const explicitPatchId =
+              inputPatchId ||
+              matched?.patchId ||
+              matched?.patch_id ||
+              (!isObj && target.startsWith("patch_") ? target : undefined);
+
+            if (explicitPatchId) {
+              await acceptPatchApi(explicitPatchId);
+            }
+
+            const updateKey = matched?.path || inputPath || lookupKey;
+            if (updateKey) {
+              get().updateDiffStatus(
+                updateKey,
+                "accepted",
+                targetSessionId,
+                fallbackFile
+              );
+            }
+            return true;
+          } catch (err) {
+            console.error("[useWorkbenchStore] Failed to accept patch:", err);
+            return false;
+          }
+        },
+
+        revertDiffPatch: async (params, targetSessionId) => {
+          const sid =
+            params.session_id ||
+            targetSessionId ||
+            get().activeSessionId ||
+            DEFAULT_INITIAL_SESSION;
+          const key = params.patch_id || params.path || "";
+
+          try {
+            const { revertPatchApi, revertFilesApi } = await import("@/lib/api/chat");
+            let syncedToMemory = false;
+            let resultMsg = "已回滚并同步至 Agent 工作记忆";
+
+            try {
+              const res = await revertPatchApi({
+                patch_id: params.patch_id,
+                path: params.path,
+                session_id: sid,
+              });
+              syncedToMemory = Boolean(res?.success);
+              if (res?.message) resultMsg = res.message;
+            } catch (patchErr) {
+              // 若该变更来自旧记录无快照表记录，优雅降级至原始文件回滚接口
+              if (params.path) {
+                const fallbackRes = await revertFilesApi(
+                  [
+                    {
+                      path: params.path,
+                      original_content: params.originalContent || "",
+                    },
+                  ],
+                  sid
+                );
+                if (!fallbackRes?.success) {
+                  throw patchErr;
+                }
+                syncedToMemory = true;
+                resultMsg = "已回滚磁盘文件";
+              } else {
+                throw patchErr;
+              }
+            }
+
+            const fallbackFile =
+              params.file ||
+              (params.path
+                ? {
+                    path: params.path,
+                    name: params.path.split("/").pop() || params.path,
+                    additions: 0,
+                    deletions: 0,
+                    originalContent: params.originalContent || "",
+                    modifiedContent: "",
+                    patchId: params.patch_id,
+                    patch_id: params.patch_id,
+                  }
+                : undefined);
+
+            if (key) {
+              get().updateDiffStatus(key, "rejected", targetSessionId, fallbackFile);
+            }
+            if (params.path && params.path !== key) {
+              get().updateDiffStatus(params.path, "rejected", targetSessionId, fallbackFile);
+            }
+            get().triggerPreviewReload();
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(
+                new CustomEvent("genesis:workspace-refresh", {
+                  detail: { path: params.path, patchId: params.patch_id, reverted: true },
+                })
+              );
+            }
+            return { success: true, syncedToMemory, message: resultMsg };
+          } catch (err) {
+            console.error("[useWorkbenchStore] Failed to revert patch:", err);
+            return {
+              success: false,
+              syncedToMemory: false,
+              message: err instanceof Error ? err.message : "回滚补丁失败",
+            };
+          }
+        },
+
+        setActivePlanState: (planState, targetSessionId) => {
+          mutateSession(
+            () => ({
+              activePlanState: planState,
+            }),
+            targetSessionId
+          );
+        },
+
+        appendPtyBuffer: (ptySessionId, chunk) => {
+          set((state) => {
+            const current = state.terminalPtyBufferBySession[ptySessionId] || [];
+            return {
+              terminalPtyBufferBySession: {
+                ...state.terminalPtyBufferBySession,
+                [ptySessionId]: [...current.slice(-500), chunk],
+              },
+            };
+          });
+        },
+
+        applyBatchedSubagentFrame: (sessionId, updates) => {
+          if (!updates || updates.length === 0) return;
+          const sid = sessionId || get().activeSessionId || DEFAULT_INITIAL_SESSION;
+          mutateSession((data) => {
+            const currentTabs = [...(data.tabs || [])];
+            let panelTab = currentTabs.find(
+              (t) => t.kind === "subagent-panel"
+            ) as SubagentPanelTabConfig | undefined;
+            if (!panelTab) {
+              const newTabId = `tab-subagent-panel-${Date.now()}`;
+              panelTab = {
+                id: newTabId,
+                kind: "subagent-panel",
+                title: "协作代理",
+                agents: [],
+                activeAgentId: null,
+                closable: true,
+              };
+              currentTabs.push(panelTab);
+            }
+
+            const nextAgents = [...(panelTab.agents || [])];
+            for (const u of updates) {
+              const idx = nextAgents.findIndex(
+                (a) =>
+                  a.id === u.agentId ||
+                  (u.parentCallId && a.parentCallId === u.parentCallId) ||
+                  (u.parentCallId && a.id === u.parentCallId) ||
+                  (u.parentCallId && a.id === `agent-${u.parentCallId}`)
+              );
+
+              if (idx >= 0) {
+                const target = nextAgents[idx];
+                const nextId =
+                  u.agentId && u.agentId !== "unknown" ? u.agentId : target.id;
+                const updatedThinking =
+                  u.thinking !== undefined
+                    ? u.thinking
+                    : u.thinkingDelta
+                    ? (target.thinkingContent || "") + u.thinkingDelta
+                    : target.thinkingContent;
+                const updatedSummary =
+                  u.summary !== undefined
+                    ? u.summary
+                    : u.summaryDelta
+                    ? (target.summary || "") + u.summaryDelta
+                    : target.summary;
+
+                let updatedSteps = target.steps;
+                if (u.step) {
+                  const s = u.step;
+                  const existingStepIdx = target.steps.findIndex(
+                    (item) =>
+                      (s.toolCallId && item.toolCallId === s.toolCallId) ||
+                      (!s.toolCallId && item.index === s.index && item.toolName === s.toolName)
+                  );
+                  if (existingStepIdx >= 0) {
+                    updatedSteps = target.steps.map((item, sIdx) =>
+                      sIdx === existingStepIdx
+                        ? {
+                            ...item,
+                            toolName: s.toolName || item.toolName,
+                            status: s.status,
+                            preview: s.preview !== undefined ? s.preview : item.preview,
+                            thinking: s.thinking !== undefined ? s.thinking : item.thinking,
+                          }
+                        : item
+                    );
+                  } else {
+                    const prevNormalized =
+                      s.status === "running"
+                        ? target.steps
+                        : target.steps.map((item) => ({
+                            ...item,
+                            status: "done" as const,
+                          }));
+                    updatedSteps = [
+                      ...prevNormalized,
+                      {
+                        index: s.index,
+                        toolCallId: s.toolCallId,
+                        toolName: s.toolName,
+                        status: s.status,
+                        preview: s.preview,
+                        thinking: s.thinking,
+                        timestamp: new Date().toISOString(),
+                      },
+                    ];
+                  }
+                }
+
+                const nextStatus = u.status || target.status;
+                if (
+                  nextStatus === "completed" ||
+                  nextStatus === "failed" ||
+                  nextStatus === "terminated"
+                ) {
+                  updatedSteps = updatedSteps.map((st) => ({
+                    ...st,
+                    status: "done" as const,
+                  }));
+                }
+
+                const nextType = u.agentType || target.agentType;
+                const nextPrompt = u.taskPrompt || target.taskPrompt;
+
+                nextAgents[idx] = {
+                  ...target,
+                  id: nextId,
+                  parentCallId: u.parentCallId || target.parentCallId,
+                  agentType: nextType,
+                  writeScope:
+                    u.writeScope && u.writeScope.length > 0
+                      ? u.writeScope
+                      : target.writeScope,
+                  taskPrompt: nextPrompt,
+                  displayName:
+                    u.taskPrompt && !target.taskPrompt
+                      ? inferAgentDisplayName(nextType, nextPrompt, nextAgents, nextId)
+                      : target.displayName,
+                  thinkingContent: updatedThinking,
+                  summary: updatedSummary,
+                  errorMessage: u.errorMessage ?? target.errorMessage,
+                  errorCode: u.errorCode ?? target.errorCode,
+                  status: nextStatus,
+                  currentStep:
+                    u.currentStep !== undefined
+                      ? Math.max(u.currentStep, target.currentStep || 0)
+                      : target.currentStep,
+                  maxSteps: u.maxSteps !== undefined ? u.maxSteps : target.maxSteps,
+                  endedAtMs:
+                    nextStatus === "completed" ||
+                    nextStatus === "failed" ||
+                    nextStatus === "terminated"
+                      ? target.endedAtMs || Date.now()
+                      : target.endedAtMs,
+                  steps: updatedSteps,
+                };
+              } else {
+                const nowMs = Date.now();
+                const initType: SubagentMode = u.agentType || "explore";
+                const initPrompt = u.taskPrompt || "";
+                const initStatus: SubagentStatus = u.status || "running";
+                nextAgents.push({
+                  id: u.agentId,
+                  parentCallId: u.parentCallId,
+                  agentType: initType,
+                  writeScope: u.writeScope,
+                  displayName: inferAgentDisplayName(
+                    initType,
+                    initPrompt,
+                    nextAgents,
+                    u.agentId
+                  ),
+                  taskPrompt: initPrompt,
+                  status: initStatus,
+                  currentStep: u.currentStep,
+                  maxSteps: u.maxSteps,
+                  steps: u.step
+                    ? [
+                        {
+                          index: u.step.index,
+                          toolCallId: u.step.toolCallId,
+                          toolName: u.step.toolName,
+                          status: u.step.status,
+                          preview: u.step.preview,
+                          thinking: u.step.thinking,
+                          timestamp: new Date().toISOString(),
+                        },
+                      ]
+                    : [],
+                  thinkingContent: u.thinking || u.thinkingDelta || "",
+                  summary: u.summary || u.summaryDelta,
+                  errorMessage: u.errorMessage,
+                  errorCode: u.errorCode,
+                  createdAt: new Date(nowMs).toISOString(),
+                  startedAtMs: nowMs,
+                  endedAtMs:
+                    initStatus !== "running" ? nowMs : undefined,
+                });
+              }
+            }
+
+            return {
+              tabs: currentTabs.map((t) =>
+                t.id === panelTab!.id
+                  ? {
+                      ...t,
+                      agents: nextAgents,
+                      activeAgentId:
+                        (t as SubagentPanelTabConfig).activeAgentId ||
+                        nextAgents[nextAgents.length - 1]?.id ||
+                        null,
+                    }
+                  : t
+              ),
+              cachedSubagents: nextAgents,
+            };
+          }, sid);
         },
 
         removeFileDiff: (paths: string[], targetSessionId?: string) => {
@@ -1197,7 +1816,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           return panelTabId;
         },
 
-        addAgentInstance: (agentId, agentType, taskPrompt, sessionId) => {
+        addAgentInstance: (agentId, agentType, taskPrompt, sessionId, meta) => {
           get().openSubagentPanel(sessionId, false);
           const sid = sessionId || get().activeSessionId || DEFAULT_INITIAL_SESSION;
           const currentData = get().workbenchBySession[sid] || createDefaultSessionWorkbench(sid);
@@ -1211,28 +1830,39 @@ export const useWorkbenchStore = create<WorkbenchState>()(
               if (t.kind === "subagent-panel") {
                 const panel = t as SubagentPanelTabConfig;
                 const existingAgentIndex = panel.agents.findIndex(
-                  (a) => a.id === agentId
+                  (a) =>
+                    a.id === agentId ||
+                    (meta?.parentCallId && a.parentCallId === meta.parentCallId)
                 );
                 if (existingAgentIndex >= 0) {
                   nextAgents = panel.agents.map((a, idx) =>
                     idx === existingAgentIndex
                       ? {
                           ...a,
+                          id: agentId,
+                          parentCallId: meta?.parentCallId || a.parentCallId,
                           agentType,
+                          writeScope: meta?.writeScope || a.writeScope,
+                          maxSteps: meta?.maxSteps || a.maxSteps,
                           taskPrompt: taskPrompt || a.taskPrompt,
                           displayName: displayName || a.displayName,
                         }
                       : a
                   );
                 } else {
+                  const nowMs = Date.now();
                   const newAgent: SubagentInstance = {
                     id: agentId,
+                    parentCallId: meta?.parentCallId,
                     agentType,
+                    writeScope: meta?.writeScope,
+                    maxSteps: meta?.maxSteps,
                     displayName,
                     taskPrompt,
                     status: "running",
                     steps: [],
-                    createdAt: new Date().toISOString(),
+                    createdAt: new Date(nowMs).toISOString(),
+                    startedAtMs: nowMs,
                   };
                   nextAgents = [...panel.agents, newAgent];
                 }
@@ -1252,6 +1882,122 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           }, sid);
         },
 
+        bindSubagentId: (parentCallId, realAgentId, meta, sessionId) => {
+          if (!realAgentId) return;
+          get().openSubagentPanel(sessionId, false);
+          const sid = sessionId || get().activeSessionId || DEFAULT_INITIAL_SESSION;
+          mutateSession((data) => {
+            let updatedList: SubagentInstance[] = [];
+            const nextTabs = data.tabs.map((t) => {
+              if (t.kind === "subagent-panel") {
+                const panel = t as SubagentPanelTabConfig;
+                const realIdx = panel.agents.findIndex((a) => a.id === realAgentId);
+                const placeholderIdx = panel.agents.findIndex(
+                  (a) =>
+                    a.id !== realAgentId &&
+                    (a.parentCallId === parentCallId ||
+                      a.id === parentCallId ||
+                      a.id === `agent-${parentCallId}`)
+                );
+
+                let nextAgents = [...panel.agents];
+                if (realIdx >= 0 && placeholderIdx >= 0) {
+                  // 合并占位实例的元数据到真实实例并删除占位
+                  const real = nextAgents[realIdx];
+                  const ph = nextAgents[placeholderIdx];
+                  nextAgents[realIdx] = {
+                    ...ph,
+                    ...real,
+                    id: realAgentId,
+                    parentCallId: parentCallId || real.parentCallId || ph.parentCallId,
+                    agentType: meta?.agentType || real.agentType || ph.agentType,
+                    writeScope:
+                      meta?.writeScope && meta.writeScope.length > 0
+                        ? meta.writeScope
+                        : real.writeScope || ph.writeScope,
+                    taskPrompt: meta?.taskPrompt || real.taskPrompt || ph.taskPrompt,
+                    status: meta?.status || real.status,
+                    steps: real.steps.length > 0 ? real.steps : ph.steps,
+                    thinkingContent: real.thinkingContent || ph.thinkingContent,
+                  };
+                  nextAgents = nextAgents.filter((_, i) => i !== placeholderIdx);
+                } else if (placeholderIdx >= 0) {
+                  const ph = nextAgents[placeholderIdx];
+                  nextAgents[placeholderIdx] = {
+                    ...ph,
+                    id: realAgentId,
+                    parentCallId: parentCallId || ph.parentCallId,
+                    agentType: meta?.agentType || ph.agentType,
+                    writeScope:
+                      meta?.writeScope && meta.writeScope.length > 0
+                        ? meta.writeScope
+                        : ph.writeScope,
+                    taskPrompt: meta?.taskPrompt || ph.taskPrompt,
+                    status: meta?.status || ph.status,
+                  };
+                } else if (realIdx >= 0) {
+                  const real = nextAgents[realIdx];
+                  nextAgents[realIdx] = {
+                    ...real,
+                    parentCallId: parentCallId || real.parentCallId,
+                    agentType: meta?.agentType || real.agentType,
+                    writeScope:
+                      meta?.writeScope && meta.writeScope.length > 0
+                        ? meta.writeScope
+                        : real.writeScope,
+                    taskPrompt: meta?.taskPrompt || real.taskPrompt,
+                    status: meta?.status || real.status,
+                  };
+                } else {
+                  const nowMs = Date.now();
+                  const mode = meta?.agentType || "explore";
+                  const prompt = meta?.taskPrompt || "";
+                  nextAgents.push({
+                    id: realAgentId,
+                    parentCallId,
+                    agentType: mode,
+                    writeScope: meta?.writeScope,
+                    displayName: inferAgentDisplayName(mode, prompt, nextAgents, realAgentId),
+                    taskPrompt: prompt,
+                    status: meta?.status || "running",
+                    steps: [],
+                    createdAt: new Date(nowMs).toISOString(),
+                    startedAtMs: nowMs,
+                  });
+                }
+
+                updatedList = nextAgents;
+                return {
+                  ...panel,
+                  agents: nextAgents,
+                  activeAgentId:
+                    panel.activeAgentId === parentCallId ||
+                    panel.activeAgentId === `agent-${parentCallId}`
+                      ? realAgentId
+                      : panel.activeAgentId || realAgentId,
+                };
+              }
+              return t;
+            });
+
+            return {
+              tabs: nextTabs,
+              cachedSubagents: updatedList.length > 0 ? updatedList : data.cachedSubagents,
+            };
+          }, sid);
+        },
+
+        markSubagentStopped: (agentId, sessionId) => {
+          get().updateAgentInstance(
+            agentId,
+            {
+              status: "terminated",
+              endedAtMs: Date.now(),
+            },
+            sessionId
+          );
+        },
+
         updateAgentInstance: (agentId, updates, sessionId) => {
           const sid = sessionId || get().activeSessionId || DEFAULT_INITIAL_SESSION;
           mutateSession((data) => {
@@ -1260,17 +2006,22 @@ export const useWorkbenchStore = create<WorkbenchState>()(
               if (t.kind === "subagent-panel") {
                 const panel = t as SubagentPanelTabConfig;
                 const nextAgents = panel.agents.map((a) => {
-                  if (a.id === agentId) {
+                  if (a.id === agentId || a.parentCallId === agentId) {
                     const updated = { ...a, ...updates };
                     if (updates.taskPrompt && !updates.displayName) {
                       updated.displayName = inferAgentDisplayName(
                         updated.agentType,
                         updated.taskPrompt,
                         panel.agents,
-                        agentId
+                        a.id
                       );
                     }
-                    if (updates.status === "completed" || updates.status === "failed") {
+                    if (
+                      updates.status === "completed" ||
+                      updates.status === "failed" ||
+                      updates.status === "terminated"
+                    ) {
+                      updated.endedAtMs = updates.endedAtMs || updated.endedAtMs || Date.now();
                       updated.steps = updated.steps.map((s) => ({
                         ...s,
                         status: "done" as const,
@@ -1481,6 +2232,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           selectedFilePath: current.selectedFilePath,
           previewUrl: current.previewUrl,
           allDiffFiles: current.allDiffFiles,
+          activePlanState: current.activePlanState || null,
         });
       },
     }

@@ -55,6 +55,7 @@ export function ProjectTree() {
   const [editingSessionTitle, setEditingSessionTitle] = useState("");
   const [isProjectsOpen, setIsProjectsOpen] = useState(true);
   const [isRecentOpen, setIsRecentOpen] = useState(true);
+  const [showAllStandalone, setShowAllStandalone] = useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [isGlobalProjectMenuOpen, setIsGlobalProjectMenuOpen] = useState(false);
@@ -251,7 +252,7 @@ export function ProjectTree() {
     <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 py-3 select-none scrollbar-hover space-y-4">
       {/* 1. 项目分区 (Projects) */}
       <div className="space-y-1">
-        <div className="group/project-header relative flex items-center justify-between px-2.5 pb-1 text-[12px] font-medium text-[#7E7E82] h-7">
+        <div className="sticky top-0 z-10 bg-[#262628]/95 backdrop-blur-sm group/project-header flex items-center justify-between px-2.5 pb-1 text-[12px] font-medium text-[#7E7E82] h-7">
           <button
             type="button"
             onClick={() => setIsProjectsOpen(!isProjectsOpen)}
@@ -637,9 +638,9 @@ export function ProjectTree() {
             })}
       </div>
 
-      {/* 2. 对话分区 */}
+      {/* 2. 对话分区（sticky 分组头 + 按时间自动分组 + 历史折叠） */}
       <div className="pt-2 group/dialog-header">
-        <div className="flex items-center justify-between px-2.5 h-7 text-[12px] font-medium text-[#7E7E82]">
+        <div className="sticky top-0 z-10 bg-[#262628]/95 backdrop-blur-sm flex items-center justify-between px-2.5 h-7 text-[12px] font-medium text-[#7E7E82]">
           <button
             type="button"
             onClick={() => setIsRecentOpen(!isRecentOpen)}
@@ -655,7 +656,7 @@ export function ProjectTree() {
             />
           </button>
 
-          {/* 右侧新增独立对话按钮 (与现有项目组保持一致的笔图标 SquarePen) */}
+          {/* 右侧新增独立对话按钮 */}
           <button
             type="button"
             onClick={async (e) => {
@@ -677,42 +678,111 @@ export function ProjectTree() {
         </div>
 
         {isRecentOpen && (
-          <div className="space-y-0.5 mt-1 animate-in fade-in duration-150">
+          <div className="space-y-2.5 mt-1 animate-in fade-in duration-150">
             {standaloneSessions.length === 0 ? (
               <div className="pl-2.5 py-1 text-[12px] text-codex-subtle">
                 暂无对话
               </div>
             ) : (
-              standaloneSessions.map((session) => (
-                <SidebarSessionItem
-                  key={session.id}
-                  session={session}
-                  isActive={activeSessionId === session.id}
-                  isMenuOpen={activeMenuId === session.id}
-                  isEditing={editingSessionId === session.id}
-                  editingTitle={editingSessionTitle}
-                  indent={false}
-                  onSelect={() => handleSelectSession(session, session.project_id)}
-                  onToggleMenu={() =>
-                    setActiveMenuId(activeMenuId === session.id ? null : session.id)
+              (() => {
+                const now = new Date();
+                const startOfToday = new Date(
+                  now.getFullYear(),
+                  now.getMonth(),
+                  now.getDate()
+                ).getTime();
+                const startOfYesterday = startOfToday - 86_400_000;
+                const startOf7Days = startOfToday - 7 * 86_400_000;
+
+                const visibleList = showAllStandalone
+                  ? standaloneSessions
+                  : standaloneSessions.slice(0, 20);
+
+                const buckets: Record<string, Session[]> = {
+                  置顶: [],
+                  今天: [],
+                  昨天: [],
+                  过去7天: [],
+                  更早: [],
+                };
+
+                for (const s of visibleList) {
+                  if (s.pinned) {
+                    buckets["置顶"].push(s);
+                    continue;
                   }
-                  onOpenEditModal={() => {
-                    setEditingSessionModalTarget(session);
-                    setActiveMenuId(null);
-                  }}
-                  onTogglePin={() => {
-                    togglePinSession(session.id);
-                    setActiveMenuId(null);
-                  }}
-                  onArchive={() => handleArchiveSession(session)}
-                  onChangeEditingTitle={setEditingSessionTitle}
-                  onSaveTitle={() => handleSaveSessionTitle(session.id)}
-                  onCancelEditing={() => {
-                    setEditingSessionId(null);
-                    setEditingSessionTitle("");
-                  }}
-                />
-              ))
+                  const ts = new Date(s.updated_at || s.created_at || 0).getTime();
+                  if (!isNaN(ts) && ts >= startOfToday) {
+                    buckets["今天"].push(s);
+                  } else if (!isNaN(ts) && ts >= startOfYesterday) {
+                    buckets["昨天"].push(s);
+                  } else if (!isNaN(ts) && ts >= startOf7Days) {
+                    buckets["过去7天"].push(s);
+                  } else {
+                    buckets["更早"].push(s);
+                  }
+                }
+
+                const orderedKeys = ["置顶", "今天", "昨天", "过去7天", "更早"];
+
+                return (
+                  <>
+                    {orderedKeys.map((label) => {
+                      const items = buckets[label];
+                      if (!items || items.length === 0) return null;
+                      return (
+                        <div key={label} className="space-y-0.5">
+                          <div className="px-2.5 pt-1 pb-0.5 text-[10.5px] font-medium text-[#6B6B70] tracking-wide">
+                            {label}
+                          </div>
+                          {items.map((session) => (
+                            <SidebarSessionItem
+                              key={session.id}
+                              session={session}
+                              isActive={activeSessionId === session.id}
+                              isMenuOpen={activeMenuId === session.id}
+                              isEditing={editingSessionId === session.id}
+                              editingTitle={editingSessionTitle}
+                              indent={false}
+                              onSelect={() => handleSelectSession(session, session.project_id)}
+                              onToggleMenu={() =>
+                                setActiveMenuId(activeMenuId === session.id ? null : session.id)
+                              }
+                              onOpenEditModal={() => {
+                                setEditingSessionModalTarget(session);
+                                setActiveMenuId(null);
+                              }}
+                              onTogglePin={() => {
+                                togglePinSession(session.id);
+                                setActiveMenuId(null);
+                              }}
+                              onArchive={() => handleArchiveSession(session)}
+                              onChangeEditingTitle={setEditingSessionTitle}
+                              onSaveTitle={() => handleSaveSessionTitle(session.id)}
+                              onCancelEditing={() => {
+                                setEditingSessionId(null);
+                                setEditingSessionTitle("");
+                              }}
+                            />
+                          ))}
+                        </div>
+                      );
+                    })}
+
+                    {standaloneSessions.length > 20 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllStandalone((prev) => !prev)}
+                        className="w-full px-2.5 py-1.5 text-[11px] text-[#8E8E93] hover:text-white hover:bg-white/[0.04] rounded-lg transition-colors text-left cursor-pointer"
+                      >
+                        {showAllStandalone
+                          ? "收起更早历史"
+                          : `展开其余 ${standaloneSessions.length - 20} 条历史对话`}
+                      </button>
+                    )}
+                  </>
+                );
+              })()
             )}
           </div>
         )}

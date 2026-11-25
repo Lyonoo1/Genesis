@@ -3,6 +3,7 @@ export type SSEEventType =
   | "session_title_updated"
   | "tool_start"
   | "tool_call_start"
+  | "tool_call_delta"
   | "tool_result"
   | "tool_call_result"
   | "reasoning_delta"
@@ -14,13 +15,22 @@ export type SSEEventType =
   | "workbench_todos"
   | "subagent_progress"
   | "mid_task_steered"
+  | "state_transition"
+  | "plan_proposed"
+  | "preempted"
+  | "context_telemetry"
+  | "pty_output"
+  | "terminal_output"
   | "done"
   | "permission_request"
+  | "confirmation_required"
+  | "confirmation_resolved"
   | "error";
 
 export interface SessionInfoPayload {
   session_id: string;
   model: string;
+  mode?: "plan" | "act";
 }
 
 export interface SessionTitleUpdatedPayload {
@@ -58,12 +68,14 @@ export interface PermissionRequestPayload {
 }
 
 export interface ReasoningDeltaPayload {
-  delta: string;
+  delta?: string;
+  text?: string;
   step?: number;
 }
 
 export interface TextDeltaPayload {
-  delta: string;
+  delta?: string;
+  text?: string;
   step?: number;
 }
 
@@ -91,6 +103,8 @@ export interface WorkbenchFileChangePayload {
   deletions?: number;
   original_content?: string;
   modified_content?: string;
+  patch_id?: string;
+  snapshot_id?: string;
 }
 
 export interface WorkbenchTodosPayload {
@@ -100,9 +114,11 @@ export interface WorkbenchTodosPayload {
 }
 
 export interface SubagentProgressPayload {
-  event: string;
+  event?: string;
   agent_id?: string;
-  agent_type: string;
+  agent_type?: string;
+  mode?: string;
+  write_scope?: string[];
   task_prompt?: string;
   step?: number;
   max_steps?: number;
@@ -111,6 +127,7 @@ export interface SubagentProgressPayload {
   summary_preview?: string;
   thinking?: string;
   thinking_content?: string;
+  thinking_delta?: string;
 }
 
 export interface MidTaskSteeredPayload {
@@ -124,9 +141,12 @@ export type SSEEventCallback =
   | { event: "session_title_updated"; data: SessionTitleUpdatedPayload }
   | { event: "tool_start"; data: ToolStartPayload }
   | { event: "tool_call_start"; data: ToolStartPayload }
+  | { event: "tool_call_delta"; data: Record<string, unknown> }
   | { event: "tool_result"; data: ToolResultPayload }
   | { event: "tool_call_result"; data: ToolResultPayload }
   | { event: "permission_request"; data: PermissionRequestPayload }
+  | { event: "confirmation_required"; data: Record<string, unknown> }
+  | { event: "confirmation_resolved"; data: Record<string, unknown> }
   | { event: "reasoning_delta"; data: ReasoningDeltaPayload }
   | { event: "text_delta"; data: TextDeltaPayload }
   | { event: "step_finish"; data: Record<string, unknown> }
@@ -136,8 +156,15 @@ export type SSEEventCallback =
   | { event: "workbench_todos"; data: WorkbenchTodosPayload }
   | { event: "subagent_progress"; data: SubagentProgressPayload }
   | { event: "mid_task_steered"; data: MidTaskSteeredPayload }
+  | { event: "state_transition"; data: Record<string, unknown> }
+  | { event: "plan_proposed"; data: Record<string, unknown> }
+  | { event: "preempted"; data: Record<string, unknown> }
+  | { event: "context_telemetry"; data: Record<string, unknown> }
+  | { event: "pty_output"; data: Record<string, unknown> }
+  | { event: "terminal_output"; data: Record<string, unknown> }
   | { event: "done"; data: Record<string, unknown> }
-  | { event: "error"; data: ErrorPayload };
+  | { event: "error"; data: ErrorPayload }
+  | { event: string; data: unknown };
 
 export type SSEEventHandler = (msg: SSEEventCallback) => void;
 
@@ -171,16 +198,23 @@ export async function parseSSEStream(
         if (!block.trim()) continue;
 
         let currentEvent: SSEEventType = "text_delta";
+        let hasEvent = false;
+        let hasData = false;
         let rawData = "";
 
         const lines = block.split("\n");
         for (const line of lines) {
+          if (line.startsWith(":")) continue; // 忽略 SSE 注释心跳（如 : ping）
           if (line.startsWith("event:")) {
             currentEvent = line.slice(6).trim() as SSEEventType;
+            hasEvent = true;
           } else if (line.startsWith("data:")) {
             rawData = line.slice(5).trim();
+            hasData = true;
           }
         }
+
+        if (!hasEvent && !hasData) continue;
 
         let parsedData: unknown = rawData;
         if (rawData) {
@@ -202,4 +236,46 @@ export async function parseSSEStream(
   } finally {
     reader.releaseLock();
   }
+}
+
+export interface ReadSSEOptions {
+  signal?: AbortSignal;
+  onEvent: (event: string, data: unknown) => void;
+}
+
+/**
+ * 通用 GET SSE 长连接读取器：自动拼接 basePath/API Base 与 Bearer Token，复用 parseSSEStream。
+ */
+export async function readSSE(
+  endpoint: string,
+  options: ReadSSEOptions
+): Promise<void> {
+  const { getApiBaseUrl, getAuthToken } = await import("./client");
+  const baseUrl = getApiBaseUrl();
+  const url = `${baseUrl}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
+  const token = getAuthToken();
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "text/event-stream",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    signal: options.signal,
+  });
+
+  if (!res.ok) {
+    throw new Error(`SSE 连接失败 (${res.status})`);
+  }
+  if (!res.body) {
+    throw new Error("SSE 响应体为空");
+  }
+
+  await parseSSEStream(
+    res.body.getReader(),
+    (msg) => {
+      options.onEvent(msg.event, msg.data);
+    },
+    options.signal
+  );
 }

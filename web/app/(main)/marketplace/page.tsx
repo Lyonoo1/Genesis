@@ -61,9 +61,9 @@ export default function MarketplacePage() {
   return (
     <div className="flex-1 flex flex-col h-full bg-canvas overflow-hidden select-none">
       {/* 1. Codex 风格顶部控制栏 (插件 / 技能 Tab + 刷新 + 设置 + 添加 ▾) */}
-      <div className="h-11 px-8 flex items-center justify-between border-b border-hairline/60 flex-shrink-0">
+      <div className="h-11 px-8 flex items-center justify-between border-b border-hairline/60 flex-shrink-0 app-drag">
         {/* 左侧：插件 / 技能切换 */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 app-no-drag">
           <button
             type="button"
             onClick={() => setTopTab("plugins")}
@@ -89,7 +89,7 @@ export default function MarketplacePage() {
         </div>
 
         {/* 右侧：刷新、设置齿轮、添加下拉按钮 */}
-        <div className="flex items-center gap-2 relative">
+        <div className="flex items-center gap-2 relative app-no-drag">
           <button
             type="button"
             title="刷新列表"

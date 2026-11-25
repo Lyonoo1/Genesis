@@ -88,7 +88,10 @@ async def delete_session(
     user: AuthenticatedUser = Depends(get_current_user),
     repo: SessionRepository = Depends(get_session_repo),
 ):
+    from services.permission_manager import permission_manager
+
     await repo.delete(user.id, session_id)
+    permission_manager.cleanup_session(session_id)
     return {"success": True, "id": session_id}
 
 

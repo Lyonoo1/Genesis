@@ -19,6 +19,16 @@ class SSEEventName(str, Enum):
     WORKBENCH_TODOS = "workbench_todos"
     SUBAGENT_PROGRESS = "subagent_progress"
     MID_TASK_STEERED = "mid_task_steered"
+    STATE_TRANSITION = "state_transition"
+    PLAN_PROPOSED = "plan_proposed"
+    PREEMPTED = "preempted"
+    CONTEXT_TELEMETRY = "context_telemetry"
+    PTY_OUTPUT = "pty_output"
+    SYSTEM_NOTICE = "system_notice"
+    CONFIRMATION_REQUIRED = "confirmation_required"
+    CONFIRMATION_RESOLVED = "confirmation_resolved"
+    CONFIRMATION_SNAPSHOT = "confirmation_snapshot"
+    GRANTS_CHANGED = "grants_changed"
     DONE = "done"
     ERROR = "error"
 
@@ -27,6 +37,9 @@ class SteeringRequest(BaseModel):
     """运行中实时插话入参"""
 
     content: str = Field(..., min_length=1, description="用户插话指令内容")
+    preempt: bool = Field(
+        default=True, description="是否微秒级抢占中断当前正在执行的流或慢工具"
+    )
 
 
 class ChatRequest(BaseModel):
@@ -50,7 +63,7 @@ class ChatRequest(BaseModel):
         default=None, description="单步最大 Token 限制 (可选，为空时由系统自动自适应)"
     )
     context_window: Optional[int] = Field(
-        default=1048576, description="模型最大上下文容量 (默认 1M: 1048576)"
+        default=None, description="模型最大上下文容量 (为空时按模型自动推断真实窗口)"
     )
     api_key: Optional[str] = Field(
         default=None, description="自定义模型 API Key (用于用户自带密钥动态调用)"
@@ -63,6 +76,18 @@ class ChatRequest(BaseModel):
     )
     workspace_path: Optional[str] = Field(
         default=None, description="当前项目工作区根目录绝对路径 (可选，若为空则由系统自动探测项目目录)"
+    )
+    mode: Optional[str] = Field(
+        default="act", description="运行模式: plan | act"
+    )
+    approved_plan_id: Optional[str] = None
+    permission_mode: Optional[str] = Field(
+        default="accept_edits",
+        description="权限审批触发粒度: accept_edits | default | review_all",
+    )
+    allow_ask_user: bool = Field(
+        default=True,
+        description="是否允许 Agent 在必要时主动发起澄清提问 (agent__ask_user)",
     )
 
 
@@ -88,4 +113,3 @@ class ConnectionTestResponse(BaseModel):
     success: bool
     latency_ms: Optional[int] = None
     error: Optional[str] = None
-

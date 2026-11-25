@@ -1,53 +1,59 @@
 "use client";
 
 import React, { useEffect } from "react";
-import { Sparkles, Terminal, Wrench } from "lucide-react";
+import { Compass, Sparkles, Terminal, Wrench, Zap, Bug, ShieldCheck, FlaskConical } from "lucide-react";
 
 export interface SkillOption {
   id: string;
   name: string;
-  category: "skill" | "mcp";
+  label?: string;
+  category: "mode" | "skill" | "mcp";
   description: string;
+  modeValue?: "plan" | "act";
 }
 
-const AVAILABLE_OPTIONS: SkillOption[] = [
+export const BUILTIN_MENTION_OPTIONS: SkillOption[] = [
   {
-    id: "code-analyzer",
-    name: "code-analyzer",
+    id: "mode-plan",
+    name: "plan",
+    label: "规划模式",
+    category: "mode",
+    modeValue: "plan",
+    description: "只读探索代码库并输出待审批实现方案，拦截所有写操作",
+  },
+  {
+    id: "mode-act",
+    name: "act",
+    label: "执行模式",
+    category: "mode",
+    modeValue: "act",
+    description: "恢复默认全功能读写编辑与命令执行模式",
+  },
+  {
+    id: "code-review",
+    name: "code-review",
+    label: "代码审查",
     category: "skill",
-    description: "深入静态代码语法与潜在死锁漏洞分析",
+    description: "深度分析代码质量、边界缺陷、安全风险与重构建议",
   },
   {
-    id: "unit-test-generator",
-    name: "unit-test-generator",
+    id: "unit-test",
+    name: "unit-test",
+    label: "单测生成",
     category: "skill",
-    description: "自动推演并编写高覆盖率 PyTest / Jest 测试用例",
+    description: "自动推演边界场景并编写高覆盖率 PyTest / Jest 单元测试",
   },
   {
-    id: "git-committer",
-    name: "git-committer",
+    id: "debug",
+    name: "debug",
+    label: "根因排查",
     category: "skill",
-    description: "规范化提取 Diff 并生成 Conventional Commits",
-  },
-  {
-    id: "web-search",
-    name: "web-search",
-    category: "skill",
-    description: "联网实时查询最新技术白皮书与开源库文档",
-  },
-  {
-    id: "mcp__github__create_issue",
-    name: "github::create_issue",
-    category: "mcp",
-    description: "通过 GitHub MCP Server 提交 Issue 跟踪",
-  },
-  {
-    id: "mcp__postgres__query",
-    name: "postgres::query",
-    category: "mcp",
-    description: "执行安全沙箱只读 SQL 查询与元数据探测",
+    description: "系统性定位报错日志、调用链与最小化修复方案",
   },
 ];
+
+// 兼容旧导入名
+export const AVAILABLE_OPTIONS = BUILTIN_MENTION_OPTIONS;
 
 interface SkillMentionDropdownProps {
   query: string;
@@ -55,6 +61,52 @@ interface SkillMentionDropdownProps {
   onSelect: (skill: SkillOption) => void;
   onClose: () => void;
   setSelectedIndex: React.Dispatch<React.SetStateAction<number>>;
+  extraOptions?: SkillOption[];
+}
+
+export function filterMentionOptions(
+  query: string,
+  extraOptions: SkillOption[] = []
+): SkillOption[] {
+  const seen = new Set<string>();
+  const merged: SkillOption[] = [];
+  for (const item of [...BUILTIN_MENTION_OPTIONS, ...extraOptions]) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      merged.push(item);
+    }
+  }
+  const q = query.trim().toLowerCase();
+  if (!q) return merged;
+  return merged.filter(
+    (opt) =>
+      opt.name.toLowerCase().includes(q) ||
+      (opt.label && opt.label.toLowerCase().includes(q)) ||
+      opt.description.toLowerCase().includes(q)
+  );
+}
+
+function getOptionIcon(item: SkillOption) {
+  if (item.category === "mode") {
+    return item.modeValue === "plan" ? (
+      <Compass className="w-3.5 h-3.5 text-indigo-400 mt-0.5 shrink-0" />
+    ) : (
+      <Zap className="w-3.5 h-3.5 text-blue-400 mt-0.5 shrink-0" />
+    );
+  }
+  if (item.id === "code-review") {
+    return <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 mt-0.5 shrink-0" />;
+  }
+  if (item.id === "unit-test") {
+    return <FlaskConical className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />;
+  }
+  if (item.id === "debug") {
+    return <Bug className="w-3.5 h-3.5 text-rose-400 mt-0.5 shrink-0" />;
+  }
+  if (item.category === "mcp") {
+    return <Wrench className="w-3.5 h-3.5 text-sky-400 mt-0.5 shrink-0" />;
+  }
+  return <Terminal className="w-3.5 h-3.5 text-zinc-400 mt-0.5 shrink-0" />;
 }
 
 export function SkillMentionDropdown({
@@ -62,10 +114,9 @@ export function SkillMentionDropdown({
   selectedIndex,
   onSelect,
   setSelectedIndex,
+  extraOptions = [],
 }: SkillMentionDropdownProps) {
-  const filtered = AVAILABLE_OPTIONS.filter((opt) =>
-    opt.name.toLowerCase().includes(query.toLowerCase())
-  );
+  const filtered = filterMentionOptions(query, extraOptions);
 
   useEffect(() => {
     if (selectedIndex >= filtered.length) {
@@ -75,96 +126,110 @@ export function SkillMentionDropdown({
 
   if (filtered.length === 0) {
     return (
-      <div className="absolute left-0 bottom-full mb-2 w-80 bg-elevated border border-hairline rounded-lg p-3 shadow-2xl z-50 text-xs text-genesis-muted text-center animate-in fade-in zoom-in-95 duration-100">
-        未找到匹配的 Skill 或 MCP 工具
+      <div className="absolute left-0 bottom-full mb-2 w-80 bg-[#1C1C20] border border-[#2B2B31] rounded-xl p-3 shadow-2xl z-50 text-xs text-zinc-400 text-center animate-in fade-in zoom-in-95 duration-100">
+        未找到匹配的模式或技能
       </div>
     );
   }
 
+  const modes = filtered.filter((item) => item.category === "mode");
   const skills = filtered.filter((item) => item.category === "skill");
   const mcps = filtered.filter((item) => item.category === "mcp");
 
   let globalIndex = 0;
 
-  return (
-    <div className="absolute left-0 bottom-full mb-2 w-[340px] max-h-72 overflow-y-auto bg-[#1C1C20] border border-[#2B2B31] rounded-xl py-1.5 shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-2 duration-150 scrollbar-thin select-none text-codex-text">
-      {skills.length > 0 && (
-        <div className="space-y-0.5">
-          <div className="px-3 py-1 text-[10px] font-mono font-medium text-codex-muted uppercase tracking-wider flex items-center gap-1.5">
-            <Sparkles className="w-3 h-3 text-codex-muted" />
-            <span>已安装 Skill</span>
-          </div>
-          {skills.map((item) => {
-            const isSelected = globalIndex === selectedIndex;
-            const currentIndex = globalIndex++;
-            return (
-              <div
-                key={item.id}
-                onClick={() => onSelect(item)}
-                onMouseEnter={() => setSelectedIndex(currentIndex)}
-                className={`px-3 py-1.5 mx-1 rounded-lg text-xs cursor-pointer flex items-start gap-2.5 transition-colors ${
-                  isSelected
-                    ? "bg-white/[0.08] text-white"
-                    : "text-codex-muted hover:bg-white/[0.04] hover:text-white"
-                }`}
-              >
-                <Terminal className="w-3.5 h-3.5 text-codex-muted mt-0.5 shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <div className="font-mono text-xs font-medium text-white flex items-center justify-between">
-                    <span>/{item.name}</span>
-                    <span className="text-[10px] font-mono text-codex-subtle">
-                      Skill
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-codex-muted truncate mt-0.5">
-                    {item.description}
-                  </p>
-                </div>
-              </div>
-            );
-          })}
+  const renderSection = (
+    title: string,
+    icon: React.ReactNode,
+    items: SkillOption[],
+    withDivider: boolean
+  ) => {
+    if (items.length === 0) return null;
+    return (
+      <div
+        className={`space-y-0.5 ${
+          withDivider ? "mt-1 pt-1 border-t border-white/[0.06]" : ""
+        }`}
+      >
+        <div className="px-3 py-1 text-[10px] font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+          {icon}
+          <span>{title}</span>
         </div>
-      )}
+        {items.map((item) => {
+          const currentIndex = globalIndex++;
+          const isSelected = currentIndex === selectedIndex;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onMouseDown={(e) => {
+                // 防止点击菜单抢走 textarea 焦点导致菜单提前卸载
+                e.preventDefault();
+                onSelect(item);
+              }}
+              onMouseEnter={() => setSelectedIndex(currentIndex)}
+              className={`w-[calc(100%-8px)] mx-1 px-2.5 py-2 rounded-lg text-xs cursor-pointer flex items-start gap-2.5 text-left transition-colors ${
+                isSelected
+                  ? "bg-white/[0.09] text-white"
+                  : "text-zinc-300 hover:bg-white/[0.05] hover:text-white"
+              }`}
+            >
+              {getOptionIcon(item)}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="font-mono text-xs font-medium text-white truncate">
+                      @{item.name}
+                    </span>
+                    {item.label && (
+                      <span className="text-[11px] text-zinc-400 truncate">
+                        {item.label}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[10px] font-mono text-zinc-500 shrink-0">
+                    {item.category === "mode"
+                      ? "模式"
+                      : item.category === "mcp"
+                      ? "MCP"
+                      : "技能"}
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-400 truncate mt-0.5">
+                  {item.description}
+                </p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
 
-      {mcps.length > 0 && (
-        <div className="space-y-0.5 mt-1 pt-1 border-t border-hairline/60">
-          <div className="px-3 py-1 text-[10px] font-mono font-medium text-codex-muted uppercase tracking-wider flex items-center gap-1.5">
-            <Wrench className="w-3 h-3 text-codex-muted" />
-            <span>MCP 工具</span>
-          </div>
-          {mcps.map((item) => {
-            const isSelected = globalIndex === selectedIndex;
-            const currentIndex = globalIndex++;
-            return (
-              <div
-                key={item.id}
-                onClick={() => onSelect(item)}
-                onMouseEnter={() => setSelectedIndex(currentIndex)}
-                className={`px-3 py-1.5 mx-1 rounded-lg text-xs cursor-pointer flex items-start gap-2.5 transition-colors ${
-                  isSelected
-                    ? "bg-white/[0.08] text-white"
-                    : "text-codex-muted hover:bg-white/[0.04] hover:text-white"
-                }`}
-              >
-                <Wrench className="w-3.5 h-3.5 text-codex-muted mt-0.5 shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <div className="font-mono text-xs font-medium text-white flex items-center justify-between">
-                    <span>/{item.name}</span>
-                    <span className="text-[10px] font-mono text-codex-subtle">
-                      MCP
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-codex-muted truncate mt-0.5">
-                    {item.description}
-                  </p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+  return (
+    <div className="absolute left-0 bottom-full mb-2 w-[360px] max-w-[calc(100vw-32px)] max-h-80 overflow-y-auto bg-[#1C1C20] border border-[#2E2E36] rounded-xl py-1.5 shadow-[0_12px_36px_rgba(0,0,0,0.65)] z-50 animate-in fade-in slide-in-from-bottom-2 duration-150 scrollbar-thin select-none text-[#ECECED]">
+      {renderSection(
+        "协作模式",
+        <Compass className="w-3 h-3 text-indigo-400" />,
+        modes,
+        false
       )}
+      {renderSection(
+        "快捷技能",
+        <Sparkles className="w-3 h-3 text-amber-400" />,
+        skills,
+        modes.length > 0
+      )}
+      {renderSection(
+        "扩展工具 (MCP)",
+        <Wrench className="w-3 h-3 text-sky-400" />,
+        mcps,
+        modes.length > 0 || skills.length > 0
+      )}
+      <div className="mt-1 pt-1 px-3 pb-0.5 border-t border-white/[0.06] flex items-center justify-between text-[10px] text-zinc-500">
+        <span>↑↓ 选择 · Enter / Tab 确认</span>
+        <span>Esc 关闭</span>
+      </div>
     </div>
   );
 }
-
-export { AVAILABLE_OPTIONS };

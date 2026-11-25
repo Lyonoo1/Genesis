@@ -8,7 +8,6 @@ import {
   X,
   Loader2,
   Copy,
-  FileCode,
   AlertTriangle,
   GitCompare,
   Square,
@@ -18,6 +17,7 @@ import {
 } from "lucide-react";
 import { stopProcessApi } from "@/lib/api/chat";
 import { useWorkbenchStore } from "@/stores/useWorkbenchStore";
+import { InlineSubAgentCard } from "./InlineSubAgentCard";
 
 interface ToolCallAccordionProps {
   toolCall: {
@@ -25,6 +25,8 @@ interface ToolCallAccordionProps {
     name: string;
     args?: Record<string, unknown>;
     status?: "running" | "success" | "failed";
+    output?: string | Record<string, unknown>;
+    latency_ms?: number;
   };
   toolResult?: {
     output?: unknown;
@@ -32,6 +34,7 @@ interface ToolCallAccordionProps {
     latencyMs?: number;
   };
   isStreaming?: boolean;
+  sessionId?: string;
 }
 
 interface DiffLineItem {
@@ -62,8 +65,8 @@ function getToolDisplayName(name: string, args?: Record<string, unknown>) {
     const p = (args?.path as string) || "";
     return p ? `列出: ${p}` : "列出目录";
   }
-  if (name.includes("execute_command")) {
-    const cmd = String(args?.command || "").trim();
+  if (name.includes("execute_command") || name.includes("exec_command")) {
+    const cmd = String(args?.command || args?.cmd || "").trim();
     return cmd ? `执行: ${cmd.length > 35 ? cmd.slice(0, 35) + "..." : cmd}` : "终端命令";
   }
   if (name.includes("grep_search")) {
@@ -85,11 +88,16 @@ export function ToolCallAccordion({
   toolCall,
   toolResult,
   isStreaming = false,
+  sessionId,
 }: ToolCallAccordionProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [copiedOutput, setCopiedOutput] = useState(false);
   const [isStopped, setIsStopped] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+
+  const isSubagentCall =
+    toolCall.name.includes("spawn_agent") ||
+    toolCall.name.includes("dispatch_subagent");
 
   // 状态推导：优先使用显式状态；未推流状态下绝不展示 running 转圈
   const status: "running" | "success" | "failed" = toolCall.status
@@ -107,12 +115,12 @@ export function ToolCallAccordion({
   // 解析结构化返回值中的 Unified Diff、增删行数与自愈信息
   const outputData = useMemo(() => {
     if (!toolResult?.output) return null;
-    let obj: any = toolResult.output;
-    if (typeof obj === "string") {
-      const trimmed = obj.trim();
+    let raw: unknown = toolResult.output;
+    if (typeof raw === "string") {
+      const trimmed = raw.trim();
       if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
         try {
-          obj = JSON.parse(trimmed);
+          raw = JSON.parse(trimmed);
         } catch {
           return null;
         }
@@ -120,7 +128,8 @@ export function ToolCallAccordion({
         return null;
       }
     }
-    if (typeof obj === "object" && obj !== null) {
+    if (typeof raw === "object" && raw !== null) {
+      const obj = raw as Record<string, unknown>;
       return {
         diff: typeof obj.diff === "string" && obj.diff.trim().length > 0 ? obj.diff : null,
         additions: typeof obj.additions === "number" ? obj.additions : null,
@@ -191,6 +200,24 @@ export function ToolCallAccordion({
   };
 
   const hasDiff = Boolean(outputData?.diff);
+
+  if (isSubagentCall) {
+    return (
+      <InlineSubAgentCard
+        toolCall={{
+          id: toolCall.id,
+          name: toolCall.name,
+          args: toolCall.args || {},
+          status,
+          output: toolCall.output,
+          latency_ms: toolCall.latency_ms ?? toolResult?.latencyMs,
+        }}
+        toolResultOutput={toolResult?.output}
+        isStreaming={isStreaming}
+        sessionId={sessionId}
+      />
+    );
+  }
 
   return (
     <div className="my-1.5 rounded-lg border border-hairline bg-[#18181C] overflow-hidden transition-all duration-150 shadow-sm select-none">

@@ -13,11 +13,15 @@ import {
 } from "lucide-react";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { useCanvasStore } from "@/stores/useCanvasStore";
+import { DiffFileItem, useWorkbenchStore } from "@/stores/useWorkbenchStore";
 import { useLocalWorkspace } from "@/hooks/useLocalWorkspace";
+
+const EMPTY_DIFF_FILES: DiffFileItem[] = [];
 import { useSessionStore } from "@/stores/useSessionStore";
 import { WorkspaceFileNode } from "@/lib/workspace/localWorkspaceManager";
 import { fetchWorkspaceTreeApi, fetchWorkspaceFileApi } from "@/lib/api/workspace";
 import { BreadcrumbsDropdown } from "../BreadcrumbsDropdown";
+import { DiffReviewBar } from "../DiffReviewBar";
 import { EditorLoadingSkeleton } from "@/components/canvas/EditorLoadingSkeleton";
 
 const MonacoCodeEditor = dynamic(
@@ -217,6 +221,15 @@ export function FileExplorerTabView({
   const [treeWidth, setTreeWidth] = useState(250);
   const [isResizingTree, setIsResizingTree] = useState(false);
 
+  const workbenchSessionId = useWorkbenchStore((s) => s.activeSessionId);
+  const storeDiffFiles = useWorkbenchStore((s) => {
+    const sid = activeSessionId || s.activeSessionId;
+    if (!sid) return s.allDiffFiles || EMPTY_DIFF_FILES;
+    const sessionData = s.workbenchBySession[sid];
+    if (sessionData) return sessionData.allDiffFiles || EMPTY_DIFF_FILES;
+    return sid === s.activeSessionId ? s.allDiffFiles || EMPTY_DIFF_FILES : EMPTY_DIFF_FILES;
+  });
+
   const activeArtifact = activeArtifactId ? artifacts[activeArtifactId] : null;
 
   // 检测当前是否为 Markdown 文档
@@ -226,6 +239,96 @@ export function FileExplorerTabView({
     return p.endsWith(".md") || p.endsWith(".markdown") || p.endsWith(".mdx");
   }, [currentFilePath]);
 
+  // 匹配当前打开文件是否存在待审查/已审查的 Diff 快照
+  const matchedDiffFile = useMemo(() => {
+    if (!currentFilePath || storeDiffFiles.length === 0) return null;
+    const normCurrent = currentFilePath.replace(/^\/+/, "");
+    return (
+      storeDiffFiles.find((f) => {
+        const normPath = (f.path || "").replace(/^\/+/, "");
+        return (
+          normPath === normCurrent ||
+          normPath.endsWith(`/${normCurrent}`) ||
+          normCurrent.endsWith(`/${normPath}`)
+        );
+      }) || null
+    );
+  }, [currentFilePath, storeDiffFiles]);
+
+  // 监听 genesis:workspace-refresh 事件：回滚或 Agent 修改落盘后瞬间刷新目录树与当前编辑器内容
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleWorkspaceRefresh = async (ev: Event) => {
+      const detail = (ev as CustomEvent<{ path?: string; reverted?: boolean }>)?.detail;
+
+      // 1. 若非本地直连，同步刷新服务端目录树
+      if (localStatus !== "CONNECTED") {
+        fetchWorkspaceTreeApi(activeSession?.id, resolvedProjectId)
+          .then((res) => {
+            if (res?.success && Array.isArray(res.tree)) {
+              setServerTree(res.tree);
+              if (res.name) setServerWorkspaceName(res.name);
+            }
+          })
+          .catch(() => {});
+      }
+
+      // 2. 刷新当前正在编辑器中打开的文件内容（尤其在 Reject & Revert 回滚磁盘后）
+      const targetPath = selectedFilePath || activeArtifact?.filePath;
+      if (!targetPath) return;
+      if (
+        detail?.path &&
+        detail.path !== targetPath &&
+        !targetPath.endsWith(`/${detail.path}`) &&
+        !detail.path.endsWith(`/${targetPath}`)
+      ) {
+        return;
+      }
+
+      try {
+        if (localStatus === "CONNECTED") {
+          const { getDirectoryHandle, readLocalFile } = await import(
+            "@/lib/workspace/localWorkspaceManager"
+          );
+          const targetKey = resolvedProjectId || "genesis-default-workspace";
+          let handle = await getDirectoryHandle(targetKey);
+          if (!handle && targetKey !== "genesis-default-workspace") {
+            handle = await getDirectoryHandle("genesis-default-workspace");
+          }
+          if (handle) {
+            const res = await readLocalFile(handle, targetPath);
+            if (res.content !== undefined) {
+              updateCurrentContent(res.content);
+            }
+          }
+        } else {
+          const sRes = await fetchWorkspaceFileApi(
+            targetPath,
+            activeSession?.id,
+            resolvedProjectId
+          );
+          if (sRes?.success && sRes.content !== undefined) {
+            updateCurrentContent(sRes.content);
+          }
+        }
+      } catch (err) {
+        console.debug("[FileExplorerTabView] 刷新回滚后的编辑器内容失败:", err);
+      }
+    };
+
+    window.addEventListener("genesis:workspace-refresh", handleWorkspaceRefresh);
+    return () => {
+      window.removeEventListener("genesis:workspace-refresh", handleWorkspaceRefresh);
+    };
+  }, [
+    localStatus,
+    activeSession?.id,
+    resolvedProjectId,
+    selectedFilePath,
+    activeArtifact?.filePath,
+    updateCurrentContent,
+  ]);
 
   // 保存到本地磁盘
   const handleSaveToDisk = useCallback(async () => {
@@ -419,6 +522,15 @@ export function FileExplorerTabView({
           </button>
         </div>
       </div>
+
+      {/* 1.5 当前打开文件存在 Diff 变更时，在编辑器顶部挂载事务审查条 */}
+      {matchedDiffFile && (
+        <DiffReviewBar
+          file={matchedDiffFile}
+          sessionId={activeSessionId || workbenchSessionId}
+          compact={true}
+        />
+      )}
 
       {/* 2. 主体分栏：左侧代码编辑器/预览 + 中间拖拽把手 + 右侧目录树 (图 2 颠覆式升级) */}
       <div className="flex-1 flex min-h-0 overflow-hidden relative">

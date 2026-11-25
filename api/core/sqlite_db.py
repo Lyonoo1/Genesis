@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -259,6 +260,70 @@ def init_sqlite_db() -> None:
         )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_usage_logs_user ON usage_logs(user_id, created_at DESC);"
+        )
+
+        # 10. 文件快照与 Diff 回滚表 (File Snapshots)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS file_snapshots (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                turn_id TEXT,
+                tool_call_id TEXT,
+                file_path TEXT NOT NULL,
+                original_content TEXT,
+                modified_content TEXT,
+                unified_diff TEXT,
+                shadow_commit_hash TEXT,
+                status TEXT NOT NULL DEFAULT 'applied',
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_snapshots_session ON file_snapshots(session_id, created_at DESC);"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_snapshots_path ON file_snapshots(session_id, file_path);"
+        )
+
+        # 11. Agent 目标与规划状态持久化表 (Agent Goals)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_goals (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'act',
+                lifecycle_state TEXT NOT NULL DEFAULT 'IDLE',
+                proposed_plan TEXT,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_goals_session ON agent_goals(session_id);"
+        )
+
+        # 12. 工作区级持久化权限规则表 (Permission Rules, P2-3)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS permission_rules (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                workspace_key TEXT NOT NULL,
+                workspace_label TEXT,
+                scope_signature TEXT NOT NULL,
+                created_from_session TEXT,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT
+            );
+            """
+        )
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_permission_rules ON permission_rules(user_id, workspace_key, scope_signature);"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_permission_rules_ws ON permission_rules(user_id, workspace_key);"
         )
 
         conn.commit()
@@ -1195,4 +1260,140 @@ def db_list_usage_logs(user_id: str, limit: int = 500) -> list[dict[str, Any]]:
         )
         rows = cursor.fetchall()
         return [dict(r) for r in rows]
+
+
+# ==============================================================================
+# 10. File Snapshots SQLite CRUD
+# ==============================================================================
+def db_insert_file_snapshot(data: dict[str, Any]) -> dict[str, Any]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        sid = str(data.get("id") or f"snap-{uuid.uuid4().hex[:12]}")
+        cursor.execute(
+            """
+            INSERT INTO file_snapshots (
+                id, session_id, turn_id, tool_call_id, file_path,
+                original_content, modified_content, unified_diff,
+                shadow_commit_hash, status, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status,
+                modified_content = excluded.modified_content,
+                unified_diff = excluded.unified_diff,
+                shadow_commit_hash = excluded.shadow_commit_hash
+            """,
+            (
+                sid,
+                str(data["session_id"]),
+                data.get("turn_id"),
+                data.get("tool_call_id"),
+                str(data["file_path"]),
+                data.get("original_content"),
+                data.get("modified_content"),
+                data.get("unified_diff"),
+                data.get("shadow_commit_hash"),
+                data.get("status", "applied"),
+                data.get("created_at") or now,
+            ),
+        )
+        conn.commit()
+    data["id"] = sid
+    return data
+
+
+def db_get_file_snapshot(patch_id: str) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM file_snapshots WHERE id = ?", (str(patch_id),))
+        r = cursor.fetchone()
+        if not r:
+            return None
+        return dict(r)
+
+
+def db_get_latest_file_snapshot(session_id: str, file_path: Optional[str] = None) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if file_path:
+            cursor.execute(
+                "SELECT * FROM file_snapshots WHERE session_id = ? AND file_path = ? ORDER BY created_at DESC LIMIT 1",
+                (str(session_id), str(file_path)),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM file_snapshots WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
+                (str(session_id),),
+            )
+        r = cursor.fetchone()
+        if not r:
+            return None
+        return dict(r)
+
+
+def db_update_file_snapshot_status(patch_id: str, status: str) -> bool:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE file_snapshots SET status = ? WHERE id = ?",
+            (str(status), str(patch_id)),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def db_list_file_snapshots(session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM file_snapshots WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+            (str(session_id), limit),
+        )
+        return [dict(r) for r in cursor.fetchall()]
+
+
+# ==============================================================================
+# 11. Agent Goals SQLite CRUD
+# ==============================================================================
+def db_upsert_agent_goal(data: dict[str, Any]) -> dict[str, Any]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc).isoformat()
+        gid = str(data.get("id") or f"goal-{data.get('session_id', 'default')}")
+        cursor.execute(
+            """
+            INSERT INTO agent_goals (id, session_id, mode, lifecycle_state, proposed_plan, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                mode = excluded.mode,
+                lifecycle_state = excluded.lifecycle_state,
+                proposed_plan = excluded.proposed_plan,
+                updated_at = excluded.updated_at
+            """,
+            (
+                gid,
+                str(data["session_id"]),
+                data.get("mode", "act"),
+                data.get("lifecycle_state", "IDLE"),
+                data.get("proposed_plan"),
+                data.get("updated_at") or now,
+            ),
+        )
+        conn.commit()
+    return db_get_agent_goal(data["session_id"]) or data
+
+
+def db_get_agent_goal(session_id: str) -> Optional[dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM agent_goals WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (str(session_id),),
+        )
+        r = cursor.fetchone()
+        if not r:
+            return None
+        return dict(r)
+
 

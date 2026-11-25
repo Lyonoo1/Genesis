@@ -2,7 +2,6 @@
 
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
-  ChevronDown,
   Search,
   X,
   ExternalLink,
@@ -21,7 +20,7 @@ import {
 } from "@/stores/useWorkbenchStore";
 import { useCanvasStore } from "@/stores/useCanvasStore";
 import { MonacoDiffEditor } from "@/components/canvas/MonacoDiffEditor";
-import { revertFilesApi } from "@/lib/api/chat";
+import { DiffReviewBar } from "@/components/workbench/DiffReviewBar";
 
 export interface ChangesTabViewProps {
   turnIndex?: number;
@@ -74,20 +73,36 @@ export function ChangesTabView({
   diffFiles,
   selectedFilePath,
 }: ChangesTabViewProps) {
-  const { openFileInExplorer, removeFileDiff, triggerPreviewReload } =
-    useWorkbenchStore();
+  const {
+    openFileInExplorer,
+    revertDiffPatch,
+    activeSessionId,
+    allDiffFiles,
+  } = useWorkbenchStore();
   const { customWidthPx } = useCanvasStore();
 
   const storeChangesTab = useWorkbenchStore((s) =>
     s.tabs.find((t) => t.kind === "changes")
   ) as ChangesTabConfig | undefined;
 
-  const effectiveFiles =
-    diffFiles && diffFiles.length > 0
-      ? diffFiles
-      : storeChangesTab?.diffFiles && storeChangesTab.diffFiles.length > 0
-      ? storeChangesTab.diffFiles
-      : [];
+  const effectiveFiles = useMemo(() => {
+    const base =
+      diffFiles && diffFiles.length > 0
+        ? diffFiles
+        : storeChangesTab?.diffFiles && storeChangesTab.diffFiles.length > 0
+        ? storeChangesTab.diffFiles
+        : allDiffFiles || [];
+    return base.map((item) => {
+      const latest = (allDiffFiles || []).find((sf) => sf.path === item.path);
+      if (!latest) return item;
+      return {
+        ...item,
+        patchId: latest.patchId || latest.patch_id || item.patchId || item.patch_id,
+        patch_id: latest.patch_id || latest.patchId || item.patch_id || item.patchId,
+        status: latest.status || item.status || "pending",
+      };
+    });
+  }, [diffFiles, storeChangesTab?.diffFiles, allDiffFiles]);
 
   const isCompact = (customWidthPx || 260) < 650;
   const [compactView, setCompactView] = useState<"diff" | "list">("diff");
@@ -107,46 +122,21 @@ export function ChangesTabView({
   const [isCopied, setIsCopied] = useState(false);
   const [isReverting, setIsReverting] = useState(false);
 
-  const handleRevertFile = async (file: DiffFileItem) => {
-    if (!file || isReverting) return;
-    setIsReverting(true);
-    try {
-      const payload = [
-        {
-          path: file.path,
-          original_content: file.originalContent || "",
-        },
-      ];
-      const res = await revertFilesApi(payload);
-      if (res && res.success) {
-        removeFileDiff([file.path]);
-        triggerPreviewReload();
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("genesis:workspace-refresh"));
-        }
-      }
-    } catch (err) {
-      console.error("[ChangesTabView] Failed to revert file:", err);
-    } finally {
-      setIsReverting(false);
-    }
-  };
-
   const handleRevertAll = async () => {
-    if (isReverting || effectiveFiles.length === 0) return;
+    const targets = effectiveFiles.filter((f) => f.status !== "rejected");
+    if (isReverting || targets.length === 0) return;
     setIsReverting(true);
     try {
-      const payload = effectiveFiles.map((f) => ({
-        path: f.path,
-        original_content: f.originalContent || "",
-      }));
-      const res = await revertFilesApi(payload);
-      if (res && res.success) {
-        removeFileDiff(effectiveFiles.map((f) => f.path));
-        triggerPreviewReload();
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("genesis:workspace-refresh"));
-        }
+      for (const file of targets) {
+        await revertDiffPatch(
+          {
+            patch_id: file.patchId || file.patch_id,
+            path: file.path,
+            session_id: activeSessionId,
+            originalContent: file.originalContent,
+          },
+          activeSessionId
+        );
       }
     } catch (err) {
       console.error("[ChangesTabView] Failed to revert all files:", err);
@@ -224,7 +214,7 @@ export function ChangesTabView({
     );
   }
 
-  // 差异代码主舞台 (接入 MonacoDiffEditor)
+  // 差异代码主舞台 (接入 MonacoDiffEditor + DiffReviewBar 事务审查栏)
   const renderDiffStage = (isFullWidth: boolean) => (
     <div
       className={`${
@@ -286,27 +276,27 @@ export function ChangesTabView({
             </button>
           )}
 
-          {effectiveFiles.length > 0 && (
+          {effectiveFiles.some((f) => f.status !== "rejected") && (
             <button
               type="button"
               onClick={handleRevertAll}
               disabled={isReverting}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-[#222226] hover:bg-[#2B2B30] text-[#ECECED] hover:text-white border border-white/10 text-xs transition-colors shrink-0 cursor-pointer"
-              title="撤销当前全部文件的变更"
+              className="flex items-center gap-1 px-2 py-1 rounded bg-[#222226] hover:bg-[#2B2B30] text-[#ECECED] hover:text-white border border-white/10 text-xs transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+              title="回滚当前全部变更并同步至 Agent 工作记忆"
             >
               {isReverting ? (
                 <Loader2 className="w-3 h-3 animate-spin" />
               ) : (
                 <Undo2 className="w-3 h-3" />
               )}
-              <span className="text-[11px] hidden sm:inline">撤销全部</span>
+              <span className="text-[11px] hidden sm:inline">全部回滚</span>
             </button>
           )}
 
           <button
             type="button"
             onClick={handleCopyCurrentDiff}
-            className="p-1.5 rounded hover:text-white hover:bg-white/10 transition-colors"
+            className="p-1.5 rounded hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
             title="复制修改后的代码"
           >
             {isCopied ? (
@@ -315,45 +305,8 @@ export function ChangesTabView({
               <Copy className="w-3.5 h-3.5" />
             )}
           </button>
-        </div>
-      </div>
 
-      {/* 当前选中文件信息条 */}
-      {activeFile && (
-        <div className="h-9 px-3 bg-[#1C1C1F] border-b border-[#242427] flex items-center justify-between shrink-0 text-xs">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="font-mono truncate text-white">
-              {activeFile.name}
-            </span>
-            <span className="text-[11px] font-mono text-zinc-500 truncate max-w-[200px] hidden md:inline">
-              {activeFile.path}
-            </span>
-            <span className="text-[11px] font-mono text-emerald-400 shrink-0">
-              +{activeFile.additions}
-            </span>
-            <span className="text-[11px] font-mono text-rose-400 shrink-0">
-              -{activeFile.deletions}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1.5 shrink-0">
-            {/* 撤销当前文件 */}
-            <button
-              type="button"
-              onClick={() => handleRevertFile(activeFile)}
-              disabled={isReverting}
-              className="flex items-center gap-1 px-2 py-0.5 rounded text-xs text-[#8E8E93] hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
-              title="撤销本文件修改并恢复原始代码"
-            >
-              {isReverting ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <Undo2 className="w-3 h-3" />
-              )}
-              <span>撤销修改</span>
-            </button>
-
-            {/* 在编辑器中独立打开 */}
+          {activeFile && (
             <button
               type="button"
               onClick={() => {
@@ -364,13 +317,23 @@ export function ChangesTabView({
                   createAsNewTab: true,
                 });
               }}
-              className="p-1 rounded hover:text-white text-[#8E8E93] hover:bg-white/10 transition-colors"
+              className="p-1.5 rounded hover:text-white text-[#8E8E93] hover:bg-white/10 transition-colors cursor-pointer"
               title="在编辑器 Tab 中独立打开此文件"
             >
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
-          </div>
+          )}
         </div>
+      </div>
+
+      {/* 双向事务 Diff 审查控制栏：展示 patch_id / 状态徽章 / Accept / Reject & Revert / 批量接受 */}
+      {activeFile && (
+        <DiffReviewBar
+          file={activeFile}
+          files={effectiveFiles}
+          sessionId={activeSessionId}
+          showBatchActions={effectiveFiles.length > 1}
+        />
       )}
 
       {/* MonacoDiffEditor 差异比对画布 */}
@@ -442,6 +405,12 @@ export function ChangesTabView({
       <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5 text-xs">
         {filteredTreeFiles.map((file) => {
           const isSelected = activePath === file.path;
+          const statusDotClass =
+            file.status === "accepted"
+              ? "bg-emerald-400"
+              : file.status === "rejected"
+              ? "bg-rose-400"
+              : "bg-amber-400";
 
           return (
             <button
@@ -466,7 +435,21 @@ export function ChangesTabView({
               }`}
             >
               <div className="flex items-center gap-2 min-w-0 flex-1">
-                <span className="truncate font-mono text-[11px]">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass}`}
+                  title={
+                    file.status === "accepted"
+                      ? "已接受 (Accepted)"
+                      : file.status === "rejected"
+                      ? "已回滚 (Rejected)"
+                      : "待审查 (Pending Review)"
+                  }
+                />
+                <span
+                  className={`truncate font-mono text-[11px] ${
+                    file.status === "rejected" ? "line-through opacity-70" : ""
+                  }`}
+                >
                   {file.name}
                 </span>
               </div>

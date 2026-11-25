@@ -75,6 +75,7 @@ function getTabIcon(tab: WorkbenchTab) {
 export function RightSidebar() {
   const { isRightSidebarOpen, toggleRightSidebar } = useUIStore();
   const {
+    activeSessionId,
     tabs,
     activeTabId,
     setActiveTabId,
@@ -282,7 +283,7 @@ export function RightSidebar() {
       )}
 
       {/* 2. 顶部主标签栏 (支持多Tab切页、X关闭、+新建[文件、浏览器、终端]) */}
-      <div className="h-11 px-2.5 bg-[#161618] border-b border-white/[0.06] flex items-center justify-between shrink-0 gap-2">
+      <div className="h-11 px-2.5 bg-[#161618] border-b border-white/[0.06] flex items-center justify-between shrink-0 gap-2 app-drag">
         {/* Tab 列表与新建下拉按钮 */}
         <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none flex-1 py-1 min-w-0">
           {tabs.map((tab, index) => {
@@ -301,7 +302,7 @@ export function RightSidebar() {
                 onDrop={(e) => handleTabDrop(e, index)}
                 onDragEnd={handleTabDragEnd}
                 onClick={() => setActiveTabId(tab.id)}
-                className={`group relative flex items-center gap-2 h-8 px-3 rounded-lg text-xs cursor-pointer select-none transition-all duration-150 shrink-0 min-w-[92px] max-w-[210px] ${
+                className={`group relative flex items-center gap-2 h-8 px-3 rounded-lg text-xs cursor-pointer select-none transition-all duration-150 shrink-0 min-w-[92px] max-w-[210px] app-no-drag ${
                   isActive
                     ? "bg-[#2D2D30] text-white font-medium shadow-sm"
                     : "bg-transparent text-[#9E9EA4] hover:text-white hover:bg-white/[0.04]"
@@ -371,7 +372,7 @@ export function RightSidebar() {
           <button
             type="button"
             onClick={openNewTab}
-            className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/10 transition-colors cursor-pointer shrink-0 ml-0.5"
+            className="p-1 rounded text-[#8E8E93] hover:text-white hover:bg-white/10 transition-colors cursor-pointer shrink-0 ml-0.5 app-no-drag"
             title="新建标签页"
           >
             <Plus className="w-4 h-4 stroke-[1.8]" />
@@ -379,7 +380,7 @@ export function RightSidebar() {
         </div>
 
         {/* 右侧动作按钮: 放大/还原、收起侧边栏 */}
-        <div className="flex items-center gap-0.5 shrink-0 text-[#8E8E93]">
+        <div className="flex items-center gap-0.5 shrink-0 text-[#8E8E93] app-no-drag">
           {/* 1. 放大 / 还原 (覆盖整个对话框区域) */}
           <div className="relative group/tip">
             <button
@@ -456,7 +457,12 @@ export function RightSidebar() {
               )}
 
               {tab.kind === "terminal" && (
-                <TerminalTabView sessionId={tab.sessionId} />
+                <TerminalTabView
+                  tabId={tab.id}
+                  sessionId={tab.sessionId}
+                  chatSessionId={activeSessionId}
+                  isVisible={isCurrent}
+                />
               )}
 
               {tab.kind === "subagent-panel" && (

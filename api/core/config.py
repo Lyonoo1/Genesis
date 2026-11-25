@@ -83,5 +83,10 @@ class Settings(BaseSettings):
         default=30, description="沙箱单次运行超时硬上限 (秒)"
     )
 
+    # Human-in-the-loop Confirmation Config
+    CONFIRMATION_TIMEOUT_S: int = Field(
+        default=300, ge=5, le=3600, description="人机协同确认/澄清气泡等待超时时间 (秒)"
+    )
+
 
 settings = Settings()

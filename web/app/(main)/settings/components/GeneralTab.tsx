@@ -3,6 +3,7 @@
 import React from "react";
 import { ChevronDown } from "lucide-react";
 import { useSettingsStore } from "@/stores/useSettingsStore";
+import { StylePreferenceSwitcher } from "@/components/agent-confirmation/StylePreferenceSwitcher";
 
 // 复刻 iOS / macOS 极简开关 Switch
 function Switch({
@@ -41,47 +42,12 @@ export function GeneralTab() {
         <h2 className="text-2xl font-bold text-white tracking-tight">常规</h2>
       </div>
 
-      {/* 模块 1：权限 */}
+      {/* 模块 1：权限与确认交互（真实生效：3 档权限粒度、主动澄清开关、气泡风格与会话白名单） */}
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-[#8E8E93] tracking-wide">
-          权限
+          权限与确认交互
         </h3>
-
-        <div className="bg-[#18181b]/70 border border-[#27272a] rounded-2xl divide-y divide-[#27272a]/60">
-          {/* 默认权限 */}
-          <div className="p-4 sm:p-5 flex items-center justify-between gap-6">
-            <div className="space-y-1 pr-4">
-              <div className="text-sm font-medium text-white">默认权限</div>
-              <div className="text-xs text-[#8E8E93] leading-relaxed">
-                默认情况下，Genesis 可以读取和编辑其工作空间中的文件。需要时，它可以请求额外访问权限。
-              </div>
-            </div>
-            <Switch
-              checked={general.defaultPermission}
-              onChange={(val) =>
-                updateGeneralSettings({ defaultPermission: val })
-              }
-            />
-          </div>
-
-          {/* 完整访问权限 */}
-          <div className="p-4 sm:p-5 flex items-center justify-between gap-6">
-            <div className="space-y-1 pr-4">
-              <div className="text-sm font-medium text-white">完整访问权限</div>
-              <div className="text-xs text-[#8E8E93] leading-relaxed">
-                当 Genesis 以完整访问权限运行时，它无需你的批准即可编辑你电脑上的任何文件，并运行可访问网络的命令。这会显著增加数据丢失、泄露或意外行为的风险。{" "}
-                <span className="text-[#007AFF] hover:underline cursor-pointer">
-                  了解更多
-                </span>{" "}
-                关于风险升高的信息。
-              </div>
-            </div>
-            <Switch
-              checked={general.fullAccess}
-              onChange={(val) => updateGeneralSettings({ fullAccess: val })}
-            />
-          </div>
-        </div>
+        <StylePreferenceSwitcher />
       </div>
 
       {/* 模块 2：常规 */}

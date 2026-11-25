@@ -21,7 +21,12 @@ export function NewTabView({ tabId }: NewTabViewProps) {
     const list = s.messagesBySession[activeSessionId];
     if (!list || !Array.isArray(list)) return false;
     return list.some((m) =>
-      m.raw_tool_calls?.some((tc) => tc.name && tc.name.includes("dispatch_subagent"))
+      m.raw_tool_calls?.some(
+        (tc) =>
+          tc.name &&
+          (tc.name.includes("dispatch_subagent") ||
+            tc.name.includes("spawn_agent"))
+      )
     );
   });
   const hasSubagents = cachedCount > 0 || hasSubagentCalls;

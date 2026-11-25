@@ -1,12 +1,14 @@
+import asyncio
+from datetime import datetime, timezone
 from uuid import UUID
 from typing import Optional
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import StreamingResponse
 
 from core.security import get_current_user, AuthenticatedUser
 from core.exceptions import AppException, ErrorCode
-from models.schemas.chat import ChatRequest, ChatStopResponse
+from models.schemas.chat import ChatRequest, ChatStopResponse, SSEEventName
 from repositories.session_repository import SessionRepository
 from services.chat_service import ChatService, chat_service
 
@@ -109,11 +111,18 @@ async def steer_chat_completion(
             code=ErrorCode.VALIDATION_ERROR,
             message="插话指令内容不能为空",
         )
-    steered = service.add_steering_message(user.id, session_id, str(content).strip())
+    preempt = bool(req.get("preempt", True))
+    try:
+        steered = service.add_steering_message(
+            user.id, session_id, str(content).strip(), preempt=preempt
+        )
+    except TypeError:
+        steered = service.add_steering_message(user.id, session_id, str(content).strip())
     return {
         "success": steered,
         "session_id": session_id,
         "steered": steered,
+        "preempt": preempt,
         "message": "插话指令已加入队列，将在当前步骤工具执行完毕后生效" if steered else "当前会话未在运行中或未就绪",
     }
 
@@ -132,6 +141,55 @@ async def stop_chat_completion(
     if stopped:
         return ChatStopResponse(success=True, message="已成功中止当前生成任务")
     return ChatStopResponse(success=False, message="当前会话无正在运行的生成任务")
+
+
+@router.post(
+    "/{session_id}/subagents/{agent_id}/steer",
+    summary="向指定子代理发送实时纠偏指令",
+    description="供前端用户在对话框内联卡片直接向指定子代理发话纠偏，支持中断当前步骤",
+)
+async def steer_subagent_endpoint(
+    session_id: str,
+    agent_id: str,
+    req: dict,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    from services.multi_agent_mesh import multi_agent_mesh
+
+    content = req.get("content") or req.get("message", "")
+    if not content or not str(content).strip():
+        raise AppException(
+            code=ErrorCode.VALIDATION_ERROR,
+            message="纠偏指令内容不能为空",
+        )
+    interrupt = bool(req.get("interrupt", True))
+    res = await multi_agent_mesh.send_input(
+        agent_id=agent_id,
+        message=str(content).strip(),
+        interrupt=interrupt,
+    )
+    if not res.get("success"):
+        raise AppException(
+            code=ErrorCode.NOT_FOUND,
+            message=res.get("error") or "子代理不存在或未在运行中",
+        )
+    return res
+
+
+@router.post(
+    "/{session_id}/subagents/{agent_id}/stop",
+    summary="单点终止指定子代理并释放锁",
+    description="供前端用户单点终止某个子代理而不打断主 Agent",
+)
+async def stop_subagent_endpoint(
+    session_id: str,
+    agent_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    from services.multi_agent_mesh import multi_agent_mesh
+
+    res = await multi_agent_mesh.close_agent(agent_id=agent_id)
+    return res
 
 
 @router.post(
@@ -163,7 +221,7 @@ async def test_model_connection(
 
 @router.post(
     "/{session_id}/approve",
-    summary="人机协同高危操作人工审批回调",
+    summary="人机协同确认/审批决议回调（兼容旧 approve 载荷）",
 )
 async def approve_tool_call(
     session_id: str,
@@ -171,20 +229,142 @@ async def approve_tool_call(
 ):
     from services.permission_manager import permission_manager
 
-    tool_call_id = req.get("tool_call_id") or req.get("approval_id", "")
-    approved = req.get("approved", True)
+    payload = dict(req or {})
+    if "decision" not in payload:
+        # 向下兼容旧前端 {tool_call_id / approval_id, approved}
+        raw_id = str(payload.get("tool_call_id") or payload.get("approval_id") or "")
+        req_id = raw_id if raw_id.startswith("cf_") else f"cf_{raw_id}"
+        approved = bool(payload.get("approved", True))
+        payload = {
+            "request_id": req_id,
+            "kind": "tool_approval",
+            "decision": "approved" if approved else "rejected",
+            "permission_scope": "once",
+        }
+        # 若旧代码直接以裸 tool_call_id 注册，也做一次回退匹配
+        resolved = permission_manager.resolve(session_id, req_id, payload)
+        if not resolved and raw_id and raw_id != req_id:
+            resolved = permission_manager.resolve(session_id, raw_id, payload)
+    else:
+        req_id = str(
+            payload.get("request_id")
+            or payload.get("tool_call_id")
+            or payload.get("approval_id")
+            or ""
+        )
+        payload["request_id"] = req_id
+        resolved = permission_manager.resolve(session_id, req_id, payload)
 
-    resolved = permission_manager.resolve_approval(
-        session_id=session_id,
-        tool_call_id=tool_call_id,
-        approved=bool(approved),
-    )
+    decision = str(payload.get("decision") or "")
+    approved_flag = decision in ("approved", "submitted")
+    if not approved_flag and req.get("path"):
+        from services.context_compiler import workspace_dirty_tracker
+
+        workspace_dirty_tracker.record_user_external_modification(
+            session_id=session_id,
+            path=req.get("path"),
+            source="diff_rejected",
+            patch_id=req.get("patch_id") or payload.get("request_id") or "",
+        )
     return {
         "success": resolved,
         "session_id": session_id,
-        "tool_call_id": tool_call_id,
-        "approved": approved,
+        "request_id": payload.get("request_id", ""),
+        "tool_call_id": req.get("tool_call_id") or req.get("approval_id") or "",
+        "decision": decision,
+        "approved": approved_flag,
     }
+
+
+@router.get(
+    "/{session_id}/grants",
+    summary="列出当前会话已授权的权限白名单签名",
+)
+async def list_session_grants(session_id: str):
+    from services.permission_manager import permission_manager
+
+    grants = permission_manager.list_grants(session_id)
+    return {
+        "success": True,
+        "session_id": session_id,
+        "grants": grants,
+    }
+
+
+@router.delete(
+    "/{session_id}/grants",
+    summary="清空当前会话全部已授权的权限白名单签名",
+)
+async def clear_session_grants(session_id: str):
+    from services.permission_manager import permission_manager
+
+    permission_manager.clear_grants(session_id)
+    return {
+        "success": True,
+        "session_id": session_id,
+        "grants": [],
+    }
+
+
+@router.get(
+    "/{session_id}/events",
+    summary="会话级事件长连接（确认快照 / 实时推送 / 白名单变更）",
+)
+async def session_events(
+    session_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session_repo: SessionRepository = Depends(get_session_repository),
+):
+    from services.chat_service import format_sse
+    from services.permission_manager import permission_manager
+    from services.session_event_bus import session_event_bus
+
+    # 校验会话归属（若会话不存在仍允许订阅，避免新建会话尚未落库时前端 404 死循环）
+    sess = await session_repo.get_by_id(user.id, session_id)
+    if sess is not None and str(getattr(sess, "user_id", user.id)) != str(user.id):
+        raise AppException(
+            code=ErrorCode.FORBIDDEN,
+            message="无权订阅该会话事件流",
+        )
+
+    q = session_event_bus.subscribe(session_id)
+
+    async def _event_gen():
+        try:
+            # 首包下发当前挂起请求快照与服务端时钟（支持刷新恢复与多标签页同步）
+            yield format_sse(
+                SSEEventName.CONFIRMATION_SNAPSHOT.value,
+                {
+                    "session_id": str(session_id),
+                    "requests": permission_manager.snapshot(session_id),
+                    "grants": permission_manager.list_grants(session_id),
+                    "server_now": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event, data = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield format_sse(event, data)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        except asyncio.CancelledError:
+            raise
+        finally:
+            session_event_bus.unsubscribe(session_id, q)
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(
@@ -279,6 +459,3 @@ async def revert_files_endpoint(req: RevertFilesRequest):
         "success": True,
         "reverted": reverted,
     }
-
-
-

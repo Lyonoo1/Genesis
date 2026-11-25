@@ -1,0 +1,174 @@
+/* ============================================================================
+   Agent 确认交互气泡模块 — 三套独立桌面风格视觉 Token 与差异化动效
+   - Material (google_aistudio): Material 3 Dark 色阶无描边流
+   - Parchment (claude_desktop): 暖炭羊皮纸 + Newsreader 人文衬线 + 单描边原则
+   - Charcoal (codex_desktop): 冷炭高对比审阅台 + 绿点状态 + 紧凑可展开 Diff
+   ============================================================================ */
+
+.cf-dock-root {
+  container-type: inline-size;
+  container-name: cf-dock;
+  width: 100%;
+  outline: none;
+  color-scheme: dark;
+}
+
+/* ---------- 风格 A: Material (google_aistudio) ---------- */
+[data-confirm-style="google_aistudio"] {
+  --cf-surface: #1e1f20;
+  --cf-surface-2: #282a2c;
+  --cf-hover: #323539;
+  --cf-border: transparent;
+  --cf-text: #e3e3e3;
+  --cf-muted: #9aa0a6;
+  --cf-accent: #a8c7fa;
+  --cf-accent-hover: #bdd5fc;
+  --cf-on-accent: #062e6f;
+  --cf-selected: #004a77;
+  --cf-focus-ring: 2px solid #a8c7fa;
+  --cf-focus-offset: 2px;
+  --cf-radius-card: 22px;
+  --cf-radius-option: 14px;
+  --cf-radius-btn: 999px;
+  --cf-title-font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --cf-body-font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --cf-mono-font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ---------- 风格 B: Parchment (claude_desktop) ---------- */
+[data-confirm-style="claude_desktop"] {
+  --cf-surface: #242320;
+  --cf-surface-2: #1c1b19;
+  --cf-hover: #2c2a26;
+  --cf-border: rgba(222, 220, 209, 0.13);
+  --cf-text: #ecebe4;
+  --cf-muted: #a19e95;
+  --cf-accent: #c96442;
+  --cf-accent-hover: #d97757;
+  --cf-on-accent: #ffffff;
+  --cf-selected: rgba(201, 100, 66, 0.14);
+  --cf-focus-ring: 1.5px solid #d97757;
+  --cf-focus-offset: 1px;
+  --cf-radius-card: 16px;
+  --cf-radius-option: 10px;
+  --cf-radius-btn: 10px;
+  --cf-title-font: "Newsreader", Georgia, Cambria, "Songti SC", "STSong", "PingFang SC", serif;
+  --cf-body-font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --cf-mono-font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ---------- 风格 C: Charcoal (codex_desktop) ---------- */
+[data-confirm-style="codex_desktop"] {
+  --cf-surface: #212121;
+  --cf-surface-2: #171717;
+  --cf-hover: #2a2a2a;
+  --cf-border: #333333;
+  --cf-text: #ececec;
+  --cf-muted: #8e8e8e;
+  --cf-accent: #ffffff;
+  --cf-accent-hover: #e5e5e5;
+  --cf-on-accent: #0d0d0d;
+  --cf-selected: #2f2f2f;
+  --cf-status: #22c55e;
+  --cf-status-warn: #eab308;
+  --cf-focus-ring: 2px solid #ffffff;
+  --cf-focus-offset: 2px;
+  --cf-radius-card: 16px;
+  --cf-radius-option: 12px;
+  --cf-radius-btn: 999px;
+  --cf-title-font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --cf-body-font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --cf-mono-font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ---------- 三套差异化入场动效 ---------- */
+@keyframes cf-enter-material {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cf-enter-parchment {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes cf-enter-charcoal {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.cf-anim-material {
+  animation: cf-enter-material 240ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.cf-anim-parchment {
+  animation: cf-enter-parchment 200ms ease-out both;
+}
+
+.cf-anim-charcoal {
+  animation: cf-enter-charcoal 150ms ease-out both;
+}
+
+/* ---------- 各风格专属焦点环（仅按钮使用 outline；输入控件由各自容器边框承接聚焦态，避免双层套娃直角框） ---------- */
+.cf-dock-root button:focus-visible {
+  outline: var(--cf-focus-ring);
+  outline-offset: var(--cf-focus-offset);
+}
+
+.cf-dock-root input:focus,
+.cf-dock-root input:focus-visible,
+.cf-dock-root textarea:focus,
+.cf-dock-root textarea:focus-visible,
+.cf-dock-root select:focus,
+.cf-dock-root select:focus-visible {
+  outline: none !important;
+  box-shadow: none;
+}
+
+/* 隐藏原生亮白 number 上下微调箭头 */
+.cf-dock-root input[type="number"]::-webkit-inner-spin-button,
+.cf-dock-root input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.cf-dock-root input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* ---------- 窄屏容器查询 (< 640px) ---------- */
+@container cf-dock (max-width: 639px) {
+  .cf-kbd {
+    display: none !important;
+  }
+
+  .cf-touch-target {
+    min-height: 44px;
+  }
+
+  .cf-form-grid-2col {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .cf-footer-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}

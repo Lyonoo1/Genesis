@@ -533,20 +533,30 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         fetchProjectsApi().catch(() => null),
       ]);
 
-      // 1. 解析项目列表：优先 API，失败才回退本地缓存
-      let projectsToSet: Project[] = [];
-      if (Array.isArray(remoteProjects)) {
-        projectsToSet = remoteProjects;
-      } else {
-        projectsToSet = loadCachedProjects();
+      // 1. 解析项目列表：优先 API，失败才回退本地缓存，并按 id 去重
+      const rawProjects: Project[] = Array.isArray(remoteProjects)
+        ? remoteProjects
+        : loadCachedProjects();
+      const projSeen = new Set<string>();
+      const projectsToSet: Project[] = [];
+      for (const p of rawProjects) {
+        if (p && p.id && !projSeen.has(p.id)) {
+          projSeen.add(p.id);
+          projectsToSet.push(p);
+        }
       }
 
-      // 2. 解析会话列表：优先 API，失败才回退本地缓存
-      let sessionsToSet: Session[] = [];
-      if (Array.isArray(remoteSessions)) {
-        sessionsToSet = remoteSessions;
-      } else {
-        sessionsToSet = loadCachedSessions();
+      // 2. 解析会话列表：优先 API，失败才回退本地缓存，并按 id 严格去重
+      const rawSessions: Session[] = Array.isArray(remoteSessions)
+        ? remoteSessions
+        : loadCachedSessions();
+      const sessSeen = new Set<string>();
+      const sessionsToSet: Session[] = [];
+      for (const s of rawSessions) {
+        if (s && s.id && !sessSeen.has(s.id)) {
+          sessSeen.add(s.id);
+          sessionsToSet.push(s);
+        }
       }
 
       set({
@@ -561,8 +571,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       console.warn("fetchSessions fallback to local cache:", err);
     }
 
-    const cachedSessions = loadCachedSessions();
-    const cachedProjects = loadCachedProjects();
+    const cachedSessions = loadCachedSessions().filter(
+      (s, idx, arr) => s && s.id && arr.findIndex((x) => x?.id === s.id) === idx
+    );
+    const cachedProjects = loadCachedProjects().filter(
+      (p, idx, arr) => p && p.id && arr.findIndex((x) => x?.id === p.id) === idx
+    );
     set({
       sessions: cachedSessions,
       projects: cachedProjects,

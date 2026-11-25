@@ -253,6 +253,27 @@ class TerminalSession:
                 f"[TerminalSession] 启动成功 id={self.id}, pid={self.pid}, master_fd={self.master_fd}, cwd={self.cwd}"
             )
 
+    def ensure_event_loop(self):
+        """确保 master_fd 挂载在当前活跃的 EventLoop 上，适应测试或跨轮循环的 loop 重建"""
+        if IS_WINDOWS or self.master_fd is None or not self._is_alive:
+            return
+        try:
+            curr_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self.loop is not curr_loop or self.loop.is_closed():
+            if self.loop and not self.loop.is_closed() and self._reader_added:
+                try:
+                    self.loop.remove_reader(self.master_fd)
+                except Exception:
+                    pass
+            self.loop = curr_loop
+            try:
+                self.loop.add_reader(self.master_fd, self._on_pty_read)
+                self._reader_added = True
+            except Exception:
+                pass
+
     def _start_windows(self):
         if PtyProcess is None:
             logger.error("[TerminalSession] winpty 未安装，Windows 终端无法启动")
@@ -779,6 +800,7 @@ class TerminalManager:
     ) -> TerminalSession:
         existing = self.sessions.get(session_id)
         if existing and existing.is_alive():
+            existing.ensure_event_loop()
             return existing
 
         if existing and not existing.is_alive():

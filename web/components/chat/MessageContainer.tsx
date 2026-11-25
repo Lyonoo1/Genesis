@@ -7,7 +7,6 @@ import { ChatInputBar } from "./ChatInputBar";
 import { ScrollToBottomBadge } from "./ScrollToBottomBadge";
 import { EmptyStateView } from "./EmptyStateView";
 import { ConversationTimelineRail } from "./ConversationTimelineRail";
-import { PermissionApprovalBanner } from "./PermissionApprovalBanner";
 import { TodoProgressBar } from "./TodoProgressBar";
 import { useStickyScroll } from "@/hooks/useStickyScroll";
 import { useChatStore } from "@/stores/useChatStore";
@@ -169,21 +168,13 @@ export function MessageContainer({ sessionId }: MessageContainerProps) {
         />
       )}
 
-      {/* 3.5 高危操作安全审批悬浮卡片 (浮于输入框上方，严禁被输入框遮挡) */}
-      <div
-        className="absolute left-0 right-0 z-40 pointer-events-auto px-4 md:px-6 transition-all duration-200"
-        style={{ bottom: `${inputBarHeight + 8}px` }}
-      >
-        <PermissionApprovalBanner sessionId={activeId} />
-      </div>
-
       {/* 4. 居底悬浮命令输入中枢 (动态上报渲染高度，水平宽度与代码块完全重合) */}
       <ChatInputBar
         sessionId={activeId}
         initialPrompt={prefilledPrompt}
         onHeightChange={setInputBarHeight}
         scrollbarWidth={scrollbarWidth}
-        onSendWithPrompt={async (prompt) => {
+        onSendWithPrompt={async (prompt, mode, skillId) => {
           let targetId = activeId;
           if (!targetId) {
             const newSession = await createSession(
@@ -196,7 +187,7 @@ export function MessageContainer({ sessionId }: MessageContainerProps) {
             router.push(`/chat/${targetId}`);
           }
           scrollToBottom(false);
-          sendStreamMessage(targetId, prompt);
+          sendStreamMessage(targetId, prompt, null, skillId || null, mode);
           setPrefilledPrompt("");
         }}
       />

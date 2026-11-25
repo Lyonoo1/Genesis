@@ -1,25 +1,32 @@
 import { getAuthToken, getApiBaseUrl, apiFetch } from "./client";
-import { parseSSEStream, SSEEventHandler } from "./streaming";
+import { parseSSEStream, SSEEventHandler, SSEEventCallback } from "./streaming";
+import type { DispatchContext } from "@/services/streamDispatcher";
 import { Message } from "@/types";
 
 
-interface SendMessageStreamParams {
+export interface SendMessageStreamParams {
   sessionId: string;
   content: string;
   parentId?: string | null;
   skillId?: string | null;
   model?: string;
+  mode?: "plan" | "act";
+  permission_mode?: "accept_edits" | "default" | "review_all";
+  allow_ask_user?: boolean;
   api_key?: string;
   base_url?: string;
   provider?: string;
   max_tokens?: number;
   context_window?: number;
   signal?: AbortSignal;
-  onEvent: SSEEventHandler;
+  dispatchContext?: DispatchContext;
+  useDispatcher?: boolean;
+  onEvent?: SSEEventHandler;
 }
 
 /**
  * 发送消息并建立 SSE 流式连接（双模驱动：后端真实流 + 优雅降级自愈 Mock 流）
+ * 默认接入 16ms rAF 批量流分发器 StreamDispatcher，彻底消除逐 chunk 重渲染风暴
  */
 export async function sendMessageStream({
   sessionId,
@@ -27,69 +34,107 @@ export async function sendMessageStream({
   parentId,
   skillId,
   model,
+  mode = "act",
+  permission_mode = "accept_edits",
+  allow_ask_user = true,
   api_key,
   base_url,
   provider,
   max_tokens,
   context_window,
   signal,
+  dispatchContext,
+  useDispatcher,
   onEvent,
 }: SendMessageStreamParams): Promise<void> {
   const token = getAuthToken();
   const baseUrl = getApiBaseUrl();
   const url = `${baseUrl}/api/chat/${sessionId}/stream`;
 
+  const shouldUseDispatcher =
+    useDispatcher !== undefined ? useDispatcher : Boolean(dispatchContext || !onEvent);
+
+  const dispatcher = shouldUseDispatcher
+    ? (await import("@/services/streamDispatcher")).streamDispatcher
+    : null;
+
+  const handleEvent: SSEEventHandler = (msg: SSEEventCallback) => {
+    if (signal?.aborted) return;
+    if (dispatcher) {
+      dispatcher.dispatch(
+        msg,
+        dispatchContext || {
+          sessionId,
+          messageId: `msg_${Date.now()}`,
+          turnStartTime: Date.now(),
+        }
+      );
+    }
+    if (onEvent) {
+      onEvent(msg);
+    }
+  };
+
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({
-        content,
-        parent_id: parentId,
-        skill_id: skillId,
-        model,
-        api_key,
-        base_url,
-        provider,
-        max_tokens,
-        context_window,
-      }),
-      signal,
-    });
-
-    if (res.ok && res.body) {
-      const reader = res.body.getReader();
-      await parseSSEStream(reader, onEvent, signal);
-      return;
-    } else {
-      const errText = await res.text().catch(() => "");
-      console.error("Backend stream failed with HTTP status:", res.status, errText);
-      throw new Error(`后端生成失败 (HTTP ${res.status}): ${errText}`);
-    }
-  } catch (err: unknown) {
-    if (signal?.aborted) {
-      throw err;
-    }
-    // 若用户已配置自己的 API Key，严禁静默降级假伪装，真实反馈异常
-    if (api_key) {
-      onEvent({
-        event: "text_delta",
-        data: {
-          delta: `\n\n⚠️ **连接后端大模型异常**: ${err instanceof Error ? err.message : String(err)}\n\n请检查后端服务是否正常运行。`,
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
+        body: JSON.stringify({
+          content,
+          parent_id: parentId,
+          skill_id: skillId,
+          model,
+          mode,
+          permission_mode,
+          allow_ask_user,
+          api_key,
+          base_url,
+          provider,
+          max_tokens,
+          context_window,
+        }),
+        signal,
       });
-      onEvent({ event: "done", data: {} });
-      return;
-    }
-    console.warn("Backend stream endpoint unavailable, switching to local adaptive Mock stream:", err);
-  }
 
-  // 优雅降级：仅在无任何模型凭据的脱机预览模式下作为打字机演示
-  await runMockSSEStream({ sessionId, content, skillId, signal, onEvent });
+      if (res.ok && res.body) {
+        const reader = res.body.getReader();
+        await parseSSEStream(reader, handleEvent, signal);
+        return;
+      } else {
+        const errText = await res.text().catch(() => "");
+        console.error("Backend stream failed with HTTP status:", res.status, errText);
+        throw new Error(`后端生成失败 (HTTP ${res.status}): ${errText}`);
+      }
+    } catch (err: unknown) {
+      if (signal?.aborted) {
+        throw err;
+      }
+      // 若用户已配置自己的 API Key，严禁静默降级假伪装，真实反馈异常
+      if (api_key) {
+        handleEvent({
+          event: "text_delta",
+          data: {
+            delta: `\n\n⚠️ **连接后端大模型异常**: ${err instanceof Error ? err.message : String(err)}\n\n请检查后端服务是否正常运行。`,
+          },
+        });
+        handleEvent({ event: "done", data: {} });
+        return;
+      }
+      console.warn("Backend stream endpoint unavailable, switching to local adaptive Mock stream:", err);
+    }
+
+    // 优雅降级：仅在无任何模型凭据的脱机预览模式下作为打字机演示
+    await runMockSSEStream({ sessionId, content, skillId, signal, onEvent: handleEvent });
+  } finally {
+    if (dispatcher) {
+      dispatcher.flush();
+    }
+  }
 }
 
 /**
@@ -178,6 +223,109 @@ export async function fetchSessionMessagesApi(
 
   return apiFetch<{ items: Message[]; next_cursor: string | null }>(
     `/api/chat/${sessionId}/messages?${query.toString()}`
+  );
+}
+
+/**
+ * 向指定子代理发送实时纠偏指令 (Mid-task Steering)
+ */
+export async function steerSubagentApi(
+  sessionId: string,
+  agentId: string,
+  content: string,
+  interrupt = true
+): Promise<{ success: boolean; message?: string }> {
+  return apiFetch<{ success: boolean; message?: string }>(
+    `/api/chat/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/steer`,
+    {
+      method: "POST",
+      body: JSON.stringify({ content, message: content, interrupt }),
+    }
+  );
+}
+
+/**
+ * 单点终止指定子代理并释放执行资源
+ */
+export async function stopSubagentApi(
+  sessionId: string,
+  agentId: string
+): Promise<{ success: boolean; message?: string }> {
+  return apiFetch<{ success: boolean; message?: string }>(
+    `/api/chat/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}/stop`,
+    {
+      method: "POST",
+    }
+  );
+}
+
+/**
+ * 回滚指定文件补丁并压入脏状态感知告警
+ */
+export async function revertPatchApi(params: {
+  patch_id?: string;
+  session_id?: string;
+  path?: string;
+  project_id?: string;
+}): Promise<{
+  success: boolean;
+  patch_id?: string;
+  status: string;
+  file_path?: string;
+  message: string;
+}> {
+  return apiFetch<{
+    success: boolean;
+    patch_id?: string;
+    status: string;
+    file_path?: string;
+    message: string;
+  }>("/api/workspace/revert_patch", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+/**
+ * 接受并锁定指定文件快照补丁
+ */
+export async function acceptPatchApi(
+  patchId: string
+): Promise<{
+  success: boolean;
+  patch_id: string;
+  status: string;
+  message: string;
+}> {
+  return apiFetch<{
+    success: boolean;
+    patch_id: string;
+    status: string;
+    message: string;
+  }>("/api/workspace/accept_patch", {
+    method: "POST",
+    body: JSON.stringify({ patch_id: patchId }),
+  });
+}
+
+/**
+ * 在 Plan 模式下对计划做出批准或修改决策
+ */
+export async function submitPlanDecisionApi(
+  sessionId: string,
+  approved: boolean,
+  feedback?: string
+): Promise<{ success: boolean; message?: string; mode?: string; state?: string }> {
+  return apiFetch<{ success: boolean; message?: string; mode?: string; state?: string }>(
+    "/api/workspace/plan_decision",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: sessionId,
+        approved,
+        feedback,
+      }),
+    }
   );
 }
 

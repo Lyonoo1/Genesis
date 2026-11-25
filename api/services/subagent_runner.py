@@ -165,9 +165,34 @@ class SubagentRunner:
                 logger.info("Subagent [%s] 模型生成被取消中断", agent_type)
                 raise
             except Exception as stream_err:
-                logger.error("Subagent [%s] 模型调用异常: %s", agent_type, stream_err)
-                final_summary = f"[Subagent 异常终止] 模型生成异常: {stream_err}"
-                break
+                from services.agent_guard import extract_clean_error
+
+                err_code, err_msg = extract_clean_error(stream_err)
+                logger.error("Subagent [%s] 模型调用异常 (%s): %s", agent_type, err_code, err_msg)
+                yield {
+                    "type": "progress",
+                    "data": {
+                        "event": "subagent_progress",
+                        "agent_type": agent_type,
+                        "task_prompt": task_prompt,
+                        "step": step,
+                        "status": "failed",
+                        "error_code": err_code,
+                        "error_message": err_msg,
+                    },
+                }
+                yield {
+                    "type": "result",
+                    "data": {
+                        "success": False,
+                        "agent_type": agent_type,
+                        "steps_taken": min(step, max_steps),
+                        "summary": "",
+                        "error": err_msg,
+                        "error_code": err_code,
+                    },
+                }
+                return
 
             step_thinking = step_reasoning.strip() or step_text.strip()
 
@@ -466,8 +491,34 @@ class SubagentRunner:
                     if chunk.type == "text":
                         final_summary += chunk.text or ""
             except Exception as e:
-                logger.warning("Subagent 强制收尾生成失败: %s", e)
-                final_summary = f"[Subagent 调查结束] 共执行 {step - 1} 步探索，未能生成最终完整报告: {e}"
+                from services.agent_guard import extract_clean_error
+
+                err_code, err_msg = extract_clean_error(e)
+                logger.warning("Subagent 强制收尾生成失败 (%s): %s", err_code, err_msg)
+                yield {
+                    "type": "progress",
+                    "data": {
+                        "event": "subagent_progress",
+                        "agent_type": agent_type,
+                        "task_prompt": task_prompt,
+                        "step": min(step, max_steps),
+                        "status": "failed",
+                        "error_code": err_code,
+                        "error_message": err_msg,
+                    },
+                }
+                yield {
+                    "type": "result",
+                    "data": {
+                        "success": False,
+                        "agent_type": agent_type,
+                        "steps_taken": min(step, max_steps),
+                        "summary": "",
+                        "error": err_msg,
+                        "error_code": err_code,
+                    },
+                }
+                return
 
         clean_summary = final_summary.strip()
         # 仅在显式传入 max_summary_length 时进行截断（单测兼容）；默认无截断完整输出

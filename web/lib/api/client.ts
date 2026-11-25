@@ -84,7 +84,11 @@ export async function apiFetch<T>(
         throw new Error("Session expired");
       }
       const errorData = await res.json().catch(() => ({}));
-      throw new Error(errorData?.error?.message || `HTTP ${res.status}`);
+      const errMsg =
+        errorData?.error?.message ||
+        (typeof errorData?.detail === "string" ? errorData.detail : undefined) ||
+        `HTTP ${res.status}`;
+      throw new Error(errMsg);
     }
 
     return res.json();

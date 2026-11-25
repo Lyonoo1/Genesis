@@ -9,16 +9,17 @@ import {
   Terminal,
   Search,
   Bot,
-  CheckCircle2,
   Loader2,
   ChevronRight,
 } from "lucide-react";
 import { ToolCallItem } from "@/types";
 import { useWorkbenchStore, inferAgentDisplayName } from "@/stores/useWorkbenchStore";
+import { InlineSubAgentCard } from "./InlineSubAgentCard";
 
 interface ActionTimelineEntryProps {
   toolCall: ToolCallItem;
   isStreaming?: boolean;
+  sessionId?: string;
 }
 
 function getActionMeta(name: string, args?: Record<string, unknown>) {
@@ -38,8 +39,8 @@ function getActionMeta(name: string, args?: Record<string, unknown>) {
     const p = (args?.path as string) || "";
     return { icon: ListTree, label: `已列出 ${p || "目录"} 中的文件`, category: "read" };
   }
-  if (name.includes("execute_command")) {
-    const cmd = String(args?.command || "").trim();
+  if (name.includes("execute_command") || name.includes("exec_command")) {
+    const cmd = String(args?.command || args?.cmd || "").trim();
     const short = cmd.length > 45 ? cmd.slice(0, 45) + "..." : cmd;
     return { icon: Terminal, label: `已运行 ${short || "终端命令"}`, category: "exec" };
   }
@@ -51,14 +52,14 @@ function getActionMeta(name: string, args?: Record<string, unknown>) {
     const pat = (args?.pattern as string) || "";
     return { icon: Search, label: `已查找文件 "${pat}"`, category: "read" };
   }
-  if (name.includes("dispatch_subagent")) {
-    const t = (args?.agent_type as string) || "explore";
-    const prompt = (args?.task_prompt as string) || "";
+  if (name.includes("dispatch_subagent") || name.includes("spawn_agent")) {
+    const t = (args?.mode as string) || (args?.agent_type as string) || "explore";
+    const prompt = (args?.task as string) || (args?.task_prompt as string) || "";
     const displayName = inferAgentDisplayName(t, prompt);
     return { icon: Bot, label: `已调度: ${displayName}`, category: "subagent" };
   }
   if (name.includes("todo_write")) {
-    const todos = (args?.todos as any[]) || [];
+    const todos = Array.isArray(args?.todos) ? args.todos : [];
     return { icon: ListTree, label: `已更新任务清单 (${todos.length} 项)`, category: "todo" };
   }
   return { icon: Terminal, label: name, category: "other" };
@@ -66,49 +67,43 @@ function getActionMeta(name: string, args?: Record<string, unknown>) {
 
 function parseDiffStats(output: unknown): { additions: number; deletions: number } | null {
   if (!output) return null;
-  let obj: any = output;
+  let obj: unknown = output;
   if (typeof obj === "string") {
     try { obj = JSON.parse(obj); } catch { return null; }
   }
   if (typeof obj === "object" && obj !== null) {
-    const a = typeof obj.additions === "number" ? obj.additions : 0;
-    const d = typeof obj.deletions === "number" ? obj.deletions : 0;
+    const rec = obj as Record<string, unknown>;
+    const a = typeof rec.additions === "number" ? rec.additions : 0;
+    const d = typeof rec.deletions === "number" ? rec.deletions : 0;
     if (a > 0 || d > 0) return { additions: a, deletions: d };
   }
   return null;
 }
 
-export function ActionTimelineEntry({ toolCall, isStreaming }: ActionTimelineEntryProps) {
+export function ActionTimelineEntry({ toolCall, isStreaming, sessionId }: ActionTimelineEntryProps) {
   const [isDetailOpen, setIsDetailOpen] = React.useState(false);
   const meta = getActionMeta(toolCall.name, toolCall.args);
   const isSubagent = meta?.category === "subagent";
-  const rawId = toolCall.id || "";
-  const agentId = rawId ? (rawId.startsWith("agent-") ? rawId : `agent-${rawId}`) : "";
 
-  // 联动 workbench 中记录的子代理实例（获取其实时状态与具体专业称号）
-  const subagentInstance = useWorkbenchStore((s) => {
-    if (!isSubagent) return null;
-    const currentSessionTabs = (s.activeSessionId && s.workbenchBySession[s.activeSessionId]?.tabs) || s.tabs || [];
-    const panel = currentSessionTabs.find((t) => t.kind === "subagent-panel") as any;
-    return panel?.agents?.find((a: any) => a.id === agentId || a.id === rawId) || null;
-  });
+  // 子代理委派原语直接渲染对话框内联可折叠子代理卡片（含 Steer / Stop / 右侧栏联动）
+  if (isSubagent) {
+    return (
+      <InlineSubAgentCard
+        toolCall={toolCall}
+        isStreaming={isStreaming}
+        sessionId={sessionId}
+      />
+    );
+  }
 
   // todo_write returns null — skip rendering
   if (!meta) return null;
 
   const Icon = meta.icon;
 
-  // 状态精准解析：子代理优先以其实际执行状态为准；流式中止或非流式状态下彻底杜绝死循环 loading
+  // 状态精准解析：非流式状态下绝不死循环 loading
   let status: "running" | "success" | "failed" = "success";
-  if (isSubagent && subagentInstance) {
-    if (subagentInstance.status === "completed") {
-      status = "success";
-    } else if (subagentInstance.status === "failed") {
-      status = "failed";
-    } else if (subagentInstance.status === "running") {
-      status = isStreaming ? "running" : "failed";
-    }
-  } else if (toolCall.status === "failed") {
+  if (toolCall.status === "failed") {
     status = "failed";
   } else if (toolCall.status === "success" || toolCall.output !== undefined) {
     status = "success";
@@ -118,86 +113,64 @@ export function ActionTimelineEntry({ toolCall, isStreaming }: ActionTimelineEnt
     status = isStreaming ? "running" : "success";
   }
 
-  // 名称解析：避免缺少 args 时全部回退为“代码库探索者”
-  let displayLabel = meta.label;
-  if (isSubagent) {
-    if (subagentInstance?.displayName) {
-      displayLabel = `已调度: ${subagentInstance.displayName}`;
-    } else {
-      const prompt = (toolCall.args?.task_prompt as string) || subagentInstance?.taskPrompt || "";
-      const t = (toolCall.args?.agent_type as string) || subagentInstance?.agentType || "explore";
-      displayLabel = `已调度: ${inferAgentDisplayName(t, prompt)}`;
-    }
-  }
-
+  const displayLabel = meta.label;
   const diffStats = parseDiffStats(toolCall.output);
   const isFileAction = meta.category === "write";
 
   const handleClick = () => {
     if (isFileAction && toolCall.output) {
-      // Open changes tab
-      let obj: any = toolCall.output;
-      if (typeof obj === "string") try { obj = JSON.parse(obj); } catch {}
-      const path = obj?.path || (toolCall.args?.path as string);
-      if (path) {
-        const wb = useWorkbenchStore.getState();
-        wb.openChangesTab({
-          diffFiles: [{
-            path,
-            name: path.split("/").pop() || "file",
-            additions: diffStats?.additions || 0,
-            deletions: diffStats?.deletions || 0,
-            originalContent: obj?.original_content || "",
-            modifiedContent: obj?.modified_content || (toolCall.args?.content as string) || "",
-            unifiedDiff: obj?.diff || obj?.unified_diff || "",
-          }],
-          selectedFilePath: path,
-        }, true);
-        return;
-      }
-    }
-    if (meta.category === "subagent") {
-      const wb = useWorkbenchStore.getState();
-      const rawId = toolCall.id || "";
-      const agentId = rawId ? (rawId.startsWith("agent-") ? rawId : `agent-${rawId}`) : null;
-
-      // 无论 subagent-panel tab 是否已被用户关闭，均自动重新打开并恢复该会话的历史子代理数据
-      const panelTabId = wb.openSubagentPanel();
-      if (panelTabId) {
-        wb.setActiveTabId(panelTabId);
-        if (agentId) {
-          // 兜底保障：若该 agent 尚未在列表中，自动从 toolCall 参数与输出补全
-          const updatedTabs = useWorkbenchStore.getState().tabs;
-          const currentPanel = updatedTabs.find((t) => t.id === panelTabId) as any;
-          if (currentPanel && !currentPanel.agents?.some((a: any) => a.id === agentId)) {
-            const agentType = (toolCall.args?.agent_type === "verify" ? "verify" : "explore") as "explore" | "verify";
-            const taskPrompt = (toolCall.args?.task_prompt as string) || "";
-            wb.addAgentInstance(agentId, agentType, taskPrompt);
-
-            if (toolCall.output) {
-              let outObj: any = toolCall.output;
-              if (typeof outObj === "string") {
-                try {
-                  outObj = JSON.parse(outObj);
-                } catch {
-                  outObj = { summary: toolCall.output };
-                }
-              }
-              wb.updateAgentInstance(agentId, {
-                status: toolCall.status === "failed" ? "failed" : "completed",
-                summary:
-                  outObj?.summary ||
-                  outObj?.result ||
-                  (typeof toolCall.output === "string" ? toolCall.output : undefined),
-              });
-            }
-          }
-          wb.setActiveAgent(agentId);
+      let obj: unknown = toolCall.output;
+      if (typeof obj === "string") {
+        try {
+          obj = JSON.parse(obj);
+        } catch {
+          obj = null;
         }
       }
-      const { useUIStore } = require("@/stores/useUIStore");
-      useUIStore.getState().openRightSidebar();
-      return;
+      const rec =
+        typeof obj === "object" && obj !== null
+          ? (obj as Record<string, unknown>)
+          : null;
+      const path =
+        (typeof rec?.path === "string" && rec.path) ||
+        (toolCall.args?.path as string);
+      if (path) {
+        const patchId =
+          (typeof rec?.patch_id === "string" && rec.patch_id) ||
+          (typeof rec?.snapshot_id === "string" && rec.snapshot_id) ||
+          undefined;
+        const wb = useWorkbenchStore.getState();
+        wb.openChangesTab(
+          {
+            diffFiles: [
+              {
+                path,
+                name: path.split("/").pop() || "file",
+                additions: diffStats?.additions || 0,
+                deletions: diffStats?.deletions || 0,
+                originalContent:
+                  typeof rec?.original_content === "string"
+                    ? rec.original_content
+                    : "",
+                modifiedContent:
+                  (typeof rec?.modified_content === "string" &&
+                    rec.modified_content) ||
+                  (toolCall.args?.content as string) ||
+                  "",
+                unifiedDiff:
+                  (typeof rec?.diff === "string" && rec.diff) ||
+                  (typeof rec?.unified_diff === "string" && rec.unified_diff) ||
+                  "",
+                ...(patchId ? { patchId, patch_id: patchId } : {}),
+              },
+            ],
+            selectedFilePath: path,
+          },
+          true,
+          sessionId
+        );
+        return;
+      }
     }
     setIsDetailOpen(!isDetailOpen);
   };
@@ -213,7 +186,7 @@ export function ActionTimelineEntry({ toolCall, isStreaming }: ActionTimelineEnt
       <div
         onClick={handleClick}
         className={`flex items-center gap-2 py-1 px-1 rounded-md transition-colors text-xs ${
-          isFileAction || meta.category === "subagent" || outputString
+          isFileAction || outputString
             ? "cursor-pointer hover:bg-white/[0.04]"
             : "cursor-default"
         }`}
@@ -250,7 +223,7 @@ export function ActionTimelineEntry({ toolCall, isStreaming }: ActionTimelineEnt
         )}
 
         {/* Expand arrow */}
-        {(isFileAction || meta.category === "subagent" || outputString) && (
+        {(isFileAction || outputString) && (
           <ChevronRight
             className={`w-3 h-3 text-zinc-600 transition-transform shrink-0 ${
               isDetailOpen ? "rotate-90 text-zinc-400" : "opacity-0 group-hover:opacity-100"

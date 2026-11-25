@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { Folder, PanelRight, PanelLeft, PanelLeftOpen, Search } from "lucide-react";
+import { Folder, MessageSquare, PanelRight, PanelLeft, PanelLeftOpen, Search } from "lucide-react";
 import { useSessionStore } from "@/stores/useSessionStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useUIStore } from "@/stores/useUIStore";
@@ -50,6 +50,16 @@ export default function MainLayout({
 
   // 登录态前置校验 (杜绝未登录用户看到工作台闪烁；桌面端自动静默免密登录)
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
+  const [isDesktopMac, setIsDesktopMac] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const isMac =
+        (window as any).electronAPI?.platform === "darwin" ||
+        (Boolean((window as any).electronAPI?.isDesktop) && /Mac/i.test(navigator.userAgent));
+      setIsDesktopMac(isMac);
+    }
+  }, []);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -238,7 +248,11 @@ export default function MainLayout({
         固定在 left-3.5 top-2.5（收起与展开状态光标零位移原地驻留）
       */}
       {pathname !== "/login" && !pathname.startsWith("/marketplace") && (
-        <div className="fixed left-3.5 top-2.5 z-50 flex items-center gap-0.5 pointer-events-auto">
+        <div
+          className={`fixed top-2.5 z-50 flex items-center gap-0.5 pointer-events-auto app-no-drag transition-[left] duration-300 ${
+            isDesktopMac ? "left-[78px]" : "left-3.5"
+          }`}
+        >
           {/* 按钮 1: 切换侧边栏 (PanelLeft ⌘B) - 位于最左侧 */}
           <div className="relative group">
             <button
@@ -299,21 +313,53 @@ export default function MainLayout({
           {/* 顶部标题栏：纯黑色调无缝贯通 */}
           {pathname !== "/login" && !pathname.startsWith("/marketplace") && (
             <header
-              className="relative z-10 h-11 px-4 flex items-center shrink-0 bg-[#161618] border-b border-white/[0.06] transition-all duration-500 ease-out"
+              className="relative z-10 h-11 px-4 flex items-center shrink-0 bg-[#161618] border-b border-white/[0.06] transition-all duration-500 ease-out app-drag"
             >
               {/* 会话信息：收起时紧跟搜索按钮右侧，展开时 margin 归零 */}
               <div
-                className={`flex items-center gap-2 min-w-0 transition-[margin] duration-500 ease-out ${
-                  !isLeftSidebarOpen ? "ml-[58px]" : "ml-0"
+                className={`flex items-center gap-2 min-w-0 transition-[margin] duration-500 ease-out pointer-events-none select-none ${
+                  !isLeftSidebarOpen
+                    ? (isDesktopMac ? "ml-[136px]" : "ml-[58px]")
+                    : "ml-0"
                 }`}
               >
-                {/* 📁 文件夹图标 + 标题 */}
-                <div className="flex items-center gap-2 text-xs font-medium text-white truncate max-w-md">
-                  <Folder className="w-3.5 h-3.5 text-codex-muted shrink-0" />
-                  <span className="truncate">
-                    {activeSession ? activeSession.title : "新对话"}
-                  </span>
-                </div>
+                {/* 会话上下文面包屑：绑定项目显示 📁 项目名 / 标题，独立对话显示 💬 标题 */}
+                {(() => {
+                  const boundProject = activeSession?.project_id
+                    ? (useSessionStore.getState().projects || []).find(
+                        (p) => p && p.id === activeSession.project_id
+                      )
+                    : null;
+                  if (boundProject) {
+                    return (
+                      <div
+                        className="flex items-center gap-1.5 text-xs font-medium text-white truncate max-w-lg"
+                        title={
+                          boundProject.folder_path
+                            ? `${boundProject.name} (${boundProject.folder_path})`
+                            : boundProject.name
+                        }
+                      >
+                        <Folder className="w-3.5 h-3.5 text-blue-400/90 shrink-0" />
+                        <span className="text-zinc-400 truncate max-w-[140px]">
+                          {boundProject.name}
+                        </span>
+                        <span className="text-zinc-600">/</span>
+                        <span className="truncate">
+                          {activeSession ? activeSession.title : "新对话"}
+                        </span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="flex items-center gap-2 text-xs font-medium text-white truncate max-w-md">
+                      <MessageSquare className="w-3.5 h-3.5 text-codex-muted shrink-0" />
+                      <span className="truncate">
+                        {activeSession ? activeSession.title : "新对话"}
+                      </span>
+                    </div>
+                  );
+                })()}
 
               </div>
             </header>
@@ -335,7 +381,7 @@ export default function MainLayout({
           type="button"
           onClick={toggleRightSidebar}
           title="展开侧边栏"
-          className="fixed top-2 right-2.5 z-40 w-7 h-7 flex items-center justify-center rounded-md text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer"
+          className="fixed top-2 right-2.5 z-40 w-7 h-7 flex items-center justify-center rounded-md text-[#8E8E93] hover:text-white hover:bg-white/[0.08] transition-colors cursor-pointer app-no-drag"
         >
           <PanelRight className="w-4 h-4" />
         </button>

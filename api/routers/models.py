@@ -4,6 +4,8 @@ from typing import Optional, Any
 from core.security import get_current_user, AuthenticatedUser
 from core.sqlite_db import db_list_models, db_upsert_model, db_delete_model
 
+from services.agent_guard import infer_model_context_window
+
 router = APIRouter(prefix="/models", tags=["Model Configurations"])
 
 
@@ -17,12 +19,17 @@ class ModelConfigPayload(BaseModel):
     isDefault: Optional[bool] = False
     temperature: Optional[float] = 0.7
     maxTokens: Optional[int] = 32768
-    contextWindow: Optional[int] = 1048576
+    contextWindow: Optional[int] = None
 
 
 @router.get("", summary="获取当前用户已保存的模型配置列表")
 async def list_models(user: AuthenticatedUser = Depends(get_current_user)):
-    return db_list_models(user.id)
+    models = db_list_models(user.id)
+    for m in models:
+        m["contextWindow"] = infer_model_context_window(
+            m.get("modelId"), m.get("contextWindow")
+        )
+    return models
 
 
 @router.post("", summary="保存或更新模型配置")
@@ -30,7 +37,11 @@ async def save_model(
     payload: ModelConfigPayload,
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    saved = db_upsert_model(user.id, payload.model_dump())
+    data = payload.model_dump()
+    data["contextWindow"] = infer_model_context_window(
+        data.get("modelId"), data.get("contextWindow")
+    )
+    saved = db_upsert_model(user.id, data)
     # 云端 Supabase 双写同步
     try:
         from core.database import get_supabase_client

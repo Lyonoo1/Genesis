@@ -32,13 +32,13 @@ export function MessageList({ sessionId, bottomSpacerHeight }: MessageListProps)
           极简原生架构 · 深度代码推演 · 智能隔离沙箱
         </p>
 
-        {/* 预置引导提问卡片 */}
+        {/* 预置面客场景引导卡片 */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-8 w-full max-w-md">
           {[
-            "介绍一下沙箱子进程隔离机制",
-            "如何使用 MCP Client 发现工具？",
-            "会话分支修剪是如何工作的？",
-            "查看当前系统的 Token 计费模型",
+            "梳理当前项目的整体架构与核心模块",
+            "帮我排查一段报错日志并定位根因",
+            "为指定业务模块补充边界单元测试",
+            "使用 @plan 规划一个新功能的实现方案",
           ].map((prompt) => (
             <button
               key={prompt}

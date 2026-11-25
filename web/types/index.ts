@@ -26,6 +26,15 @@ export interface Message {
     latency_ms?: number;
     tokens?: number;
   };
+  system_notice?: {
+    level: "info" | "warning" | "error";
+    reason?: string;
+    message: string;
+    detail?: string;
+    steps_taken?: number;
+    max_steps?: number;
+    can_continue?: boolean;
+  } | null;
 }
 
 export interface Session {

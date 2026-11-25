@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useSessionStore } from "@/stores/useSessionStore";
+import { StylePreferenceSwitcher } from "@/components/agent-confirmation/StylePreferenceSwitcher";
 
 function formatArchiveDate(dateStr: string) {
   const d = new Date(dateStr);
@@ -188,89 +189,11 @@ export function SettingsModal() {
 
         {/* 2. 右侧设置详情面板 (Settings Content) */}
         <div className="flex-1 overflow-y-auto p-6 scrollbar-thin text-xs text-codex-text">
-          {/* TAB 1: 常规 (对标截图 3) */}
+          {/* TAB 1: 常规 */}
           {activeSettingsTab === "general" && (
             <div className="space-y-6">
-              {/* 权限控制卡片 */}
-              <div className="p-4 rounded-xl bg-[#1A1A1E] border border-hairline space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-white text-sm">默认权限</div>
-                    <div className="text-codex-muted text-xs mt-0.5">
-                      默认情况下，可以读取和编辑其工作空间中的文件。需要时，它可请求额外访问权限
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateGeneralSettings({
-                        defaultPermission: !general.defaultPermission,
-                      })
-                    }
-                    className={`w-10 h-5 rounded-full p-0.5 transition-colors ${
-                      general.defaultPermission ? "bg-accent-blue" : "bg-white/20"
-                    }`}
-                  >
-                    <div
-                      className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                        general.defaultPermission ? "translate-x-5" : ""
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                <div className="h-[1px] bg-hairline/60" />
-
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-white text-sm">自动审核</div>
-                    <div className="text-codex-muted text-xs mt-0.5">
-                      可以读取和编辑其工作空间中的文件。会自动审查额外访问权限请求
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateGeneralSettings({ autoReview: !general.autoReview })
-                    }
-                    className={`w-10 h-5 rounded-full p-0.5 transition-colors ${
-                      general.autoReview ? "bg-accent-blue" : "bg-white/20"
-                    }`}
-                  >
-                    <div
-                      className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                        general.autoReview ? "translate-x-5" : ""
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                <div className="h-[1px] bg-hairline/60" />
-
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-white text-sm">完整访问权限</div>
-                    <div className="text-codex-muted text-xs mt-0.5">
-                      以完整访问权限运行时，无需批准即可编辑电脑上的任何文件并运行网络命令
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      updateGeneralSettings({ fullAccess: !general.fullAccess })
-                    }
-                    className={`w-10 h-5 rounded-full p-0.5 transition-colors ${
-                      general.fullAccess ? "bg-accent-blue" : "bg-white/20"
-                    }`}
-                  >
-                    <div
-                      className={`w-4 h-4 rounded-full bg-white transition-transform ${
-                        general.fullAccess ? "translate-x-5" : ""
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
+              {/* 智能体确认交互、三档权限模式与会话白名单管理 */}
+              <StylePreferenceSwitcher />
 
               {/* 常规设置字段 */}
               <div className="space-y-4">
@@ -487,6 +410,7 @@ export function SettingsModal() {
                   </button>
                 </div>
               </div>
+              <StylePreferenceSwitcher />
             </div>
           )}
 

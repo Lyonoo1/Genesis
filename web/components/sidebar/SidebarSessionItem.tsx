@@ -93,12 +93,18 @@ export const SidebarSessionItem = React.memo(function SidebarSessionItem({
       onClick={onSelect}
       className={`group/session relative flex items-center justify-between ${
         indent ? "pl-7" : "px-2.5"
-      } pr-2.5 h-8 rounded-[8px] text-[13.5px] cursor-pointer transition-colors ${
+      } pr-2.5 h-8 rounded-[8px] text-[13px] cursor-pointer transition-colors ${
         isActive
-          ? "bg-[#373839] text-white font-normal"
-          : "text-[#ECECED] hover:bg-white/[0.05] font-normal"
+          ? "bg-[#373839] text-white font-medium border border-white/[0.08]"
+          : "text-[#D4D4D8] hover:bg-white/[0.05] hover:text-white font-normal border border-transparent"
       }`}
     >
+      {isActive && (
+        <span
+          className="absolute left-0.5 top-1.5 bottom-1.5 w-[3px] rounded-full bg-blue-500"
+          aria-hidden="true"
+        />
+      )}
       <div className="flex items-center gap-1.5 min-w-0 pr-2">
         {session.pinned && (
           <Pin className="w-3 h-3 text-accent-coral fill-accent-coral shrink-0 rotate-45" />
