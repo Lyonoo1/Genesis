@@ -4,6 +4,7 @@ from typing import Optional, Any
 from fastapi import APIRouter, Query, HTTPException, Depends
 from pydantic import BaseModel, Field
 from core.security import get_current_user, AuthenticatedUser
+from core.workspace_guard import is_forbidden_workspace_path
 from services.chat_service import chat_service
 from services.workspace_tool_executor import WorkspaceToolExecutor
 
@@ -125,11 +126,15 @@ async def get_workspace_tree(
     project_id: Optional[str] = Query(default=None, description="项目ID"),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
-    ws_root = await chat_service.resolve_workspace_root(
+    ws_info = await chat_service.resolve_workspace_info(
         user_id=user.id,
         session_id=session_id,
         project_id=project_id,
     )
+    ws_root = str(ws_info["workspace_root"])
+    is_bound = bool(ws_info.get("bound", True))
+    workspace_mode = str(ws_info.get("workspace_mode", "bound"))
+    is_sandbox = bool(ws_info.get("is_sandbox", False))
 
     if ws_root.startswith("bridge://"):
         from services.bridge_manager import BridgeManager
@@ -142,6 +147,9 @@ async def get_workspace_tree(
         if res.get("success"):
             return {
                 "success": True,
+                "bound": True,
+                "workspace_mode": "bridge",
+                "is_sandbox": False,
                 "workspace_root": local_cwd,
                 "name": root_name,
                 "tree": res.get("tree", []),
@@ -149,27 +157,52 @@ async def get_workspace_tree(
             }
         return {
             "success": False,
+            "bound": True,
+            "workspace_mode": "bridge",
+            "is_sandbox": False,
             "workspace_root": local_cwd,
+            "name": root_name,
             "tree": [],
             "error": res.get("error", "通过本地 Bridge 获取文件树失败"),
             "is_bridge": True,
+        }
+
+    if is_forbidden_workspace_path(ws_root):
+        return {
+            "success": True,
+            "bound": False,
+            "workspace_mode": "unbound",
+            "is_sandbox": True,
+            "workspace_root": "",
+            "name": "",
+            "tree": [],
+            "is_bridge": False,
         }
 
     root_path = Path(ws_root).resolve()
     if not root_path.exists() or not root_path.is_dir():
         return {
             "success": False,
-            "workspace_root": str(root_path),
+            "bound": is_bound,
+            "workspace_mode": workspace_mode,
+            "is_sandbox": is_sandbox,
+            "workspace_root": str(root_path) if is_bound else "",
+            "name": (root_path.name or "workspace") if is_bound else "",
             "tree": [],
             "error": "工作区目录不存在",
+            "is_bridge": False,
         }
 
     tree = build_file_tree(root_path, root_path)
     return {
         "success": True,
-        "workspace_root": str(root_path),
-        "name": root_path.name or "workspace",
+        "bound": is_bound,
+        "workspace_mode": workspace_mode,
+        "is_sandbox": is_sandbox,
+        "workspace_root": str(root_path) if is_bound else "",
+        "name": (root_path.name or "workspace") if is_bound else "",
         "tree": tree,
+        "is_bridge": False,
     }
 
 
@@ -202,6 +235,9 @@ async def get_workspace_file(
             "size": len(content.encode("utf-8")),
             "is_bridge": True,
         }
+
+    if is_forbidden_workspace_path(ws_root):
+        raise HTTPException(status_code=403, detail="安全策略拦截：禁止访问受限工作区目录")
 
     try:
         full_path = WorkspaceToolExecutor.resolve_safe_path(ws_root, path)
@@ -241,6 +277,9 @@ async def write_workspace_file(
         session_id=body.session_id,
         project_id=body.project_id,
     )
+
+    if not ws_root.startswith("bridge://") and is_forbidden_workspace_path(ws_root):
+        raise HTTPException(status_code=403, detail="安全策略拦截：禁止写入受限工作区目录")
 
     if ws_root.startswith("bridge://"):
         from services.bridge_manager import BridgeManager

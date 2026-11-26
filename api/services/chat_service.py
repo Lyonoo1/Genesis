@@ -9,6 +9,13 @@ from uuid import UUID
 
 from core.config import settings
 from core.exceptions import AppException, ErrorCode
+from core.workspace_guard import (
+    get_api_source_root,
+    get_isolated_sandbox_workspace,
+    is_forbidden_workspace_path,
+    is_restricted_env,
+    is_sandbox_root_path,
+)
 from models.schemas.chat import SSEEventName, ChatRequest
 from models.schemas.message import MessageCreate, MessageRole, MessageStatus, ToolCallItem
 from models.schemas.session import SessionUpdate
@@ -201,14 +208,14 @@ class ChatService:
             return True
         return False
 
-    async def resolve_workspace_root(
+    async def resolve_workspace_info(
         self,
         user_id: str,
         session_id: Any = None,
         explicit_path: Optional[str] = None,
         project_id: Optional[str] = None,
-    ) -> str:
-        """多级解析当前会话对应的真实物理工作区绝对路径"""
+    ) -> dict[str, Any]:
+        """多级解析当前会话对应的工作区路径与绑定状态元数据"""
         # 0. 优先检测当前用户是否已建立本地 Bridge 反向隧道
         from services.bridge_manager import BridgeManager
 
@@ -216,12 +223,29 @@ class ChatService:
         if bridge.is_connected(str(user_id)):
             meta = bridge.get_metadata(str(user_id)) or {}
             cwd = meta.get("cwd") or "."
-            return f"bridge://{user_id}::{cwd}"
+            return {
+                "workspace_root": f"bridge://{user_id}::{cwd}",
+                "bound": True,
+                "workspace_mode": "bridge",
+                "is_bridge": True,
+                "is_sandbox": False,
+            }
 
-        if explicit_path and os.path.isdir(explicit_path):
-            return os.path.abspath(explicit_path)
+        # 1. 显式传入的合法目录路径
+        if (
+            explicit_path
+            and os.path.isdir(explicit_path)
+            and not is_forbidden_workspace_path(explicit_path)
+        ):
+            return {
+                "workspace_root": os.path.abspath(explicit_path),
+                "bound": True,
+                "workspace_mode": "explicit",
+                "is_bridge": False,
+                "is_sandbox": False,
+            }
 
-        # 尝试通过 session / project 反查项目名称与关联文件夹
+        # 2. 尝试通过 session / project 反查项目名称与关联文件夹
         project_name: Optional[str] = None
         project_folder: Optional[str] = None
         try:
@@ -238,78 +262,141 @@ class ChatService:
         except Exception as e:
             logger.warning("查询 Session/Project 关联异常: %s", e)
 
-        # 若项目已明确绑定了本地存在的绝对目录路径，最高优先级命中
+        # 若项目已明确绑定了本地存在的合法绝对目录路径，最高优先级命中 (桌面端或本地真实绑定)
         for candidate_name in [project_folder, project_name]:
-            if candidate_name and os.path.isabs(candidate_name) and os.path.isdir(candidate_name):
-                return os.path.abspath(candidate_name)
+            if (
+                candidate_name
+                and os.path.isabs(candidate_name)
+                and os.path.isdir(candidate_name)
+                and not is_forbidden_workspace_path(candidate_name)
+            ):
+                return {
+                    "workspace_root": os.path.abspath(candidate_name),
+                    "bound": True,
+                    "workspace_mode": "project",
+                    "is_bridge": False,
+                    "is_sandbox": False,
+                }
 
-        # 环境变量次之 (作为未指定项目路径时的默认备用根目录)
-        env_root = os.environ.get("WORKSPACE_ROOT")
-        if env_root and os.path.isdir(env_root):
-            return os.path.abspath(env_root)
+        # 3. 环境变量 WORKSPACE_ROOT 次之 (需先通过源码/系统目录安全守卫校验)
+        env_root = (os.environ.get("WORKSPACE_ROOT") or "").strip()
+        if env_root and not is_forbidden_workspace_path(env_root):
+            # 若配置为生产隔离沙箱基目录 (如 /tmp/genesis/sandboxes/workspaces)，按用户隔离子目录并标记为未绑定
+            if is_sandbox_root_path(env_root):
+                sandbox_ws = get_isolated_sandbox_workspace(user_id=user_id, base_dir=env_root)
+                return {
+                    "workspace_root": sandbox_ws,
+                    "bound": False,
+                    "workspace_mode": "unbound",
+                    "is_bridge": False,
+                    "is_sandbox": True,
+                }
+            if os.path.isdir(env_root):
+                return {
+                    "workspace_root": os.path.abspath(env_root),
+                    "bound": True,
+                    "workspace_mode": "env",
+                    "is_bridge": False,
+                    "is_sandbox": False,
+                }
 
-        # 针对常见 Docker 容器化部署路径检查 (/app)
-        if os.path.isdir("/app") and os.path.exists("/app/api"):
-            if project_folder and os.path.isdir(os.path.join("/app", project_folder)):
-                return os.path.join("/app", project_folder)
-            return "/app"
+        # 4. 仅在非生产、非容器的本地开发模式下允许回退到工程目录 (make dev)
+        if not is_restricted_env():
+            api_root = get_api_source_root()
+            genesis_root = os.path.abspath(os.path.join(str(api_root), ".."))
+            parent_dir = os.path.abspath(os.path.join(genesis_root, ".."))
 
-        current_file = os.path.abspath(__file__)
-        # api/services/chat_service.py -> api -> Genesis
-        genesis_root = os.path.abspath(os.path.join(current_file, "..", "..", ".."))
-        parent_dir = os.path.abspath(os.path.join(genesis_root, ".."))
+            is_safe_parent = (
+                os.path.isdir(parent_dir)
+                and not is_forbidden_workspace_path(parent_dir)
+            )
+            is_safe_genesis = (
+                os.path.isdir(genesis_root)
+                and not is_forbidden_workspace_path(genesis_root)
+            )
 
-        system_roots = {
-            "/",
-            "/root",
-            "/home",
-            "/var",
-            "/etc",
-            "/usr",
-            "/tmp",
-            "/bin",
-            "/opt",
-            "/lib",
-            "Desktop",
-            "Users",
-        }
-        is_safe_parent = (
-            os.path.isdir(parent_dir)
-            and parent_dir != "/"
-            and os.path.basename(parent_dir) not in system_roots
-        )
+            for candidate_name in [project_folder, project_name]:
+                if not candidate_name:
+                    continue
+                if is_safe_parent:
+                    if os.path.basename(parent_dir).lower() == candidate_name.lower():
+                        return {
+                            "workspace_root": parent_dir,
+                            "bound": True,
+                            "workspace_mode": "local_dev",
+                            "is_bridge": False,
+                            "is_sandbox": False,
+                        }
+                    cand = os.path.join(parent_dir, candidate_name)
+                    if os.path.isdir(cand) and not is_forbidden_workspace_path(cand):
+                        return {
+                            "workspace_root": os.path.abspath(cand),
+                            "bound": True,
+                            "workspace_mode": "local_dev",
+                            "is_bridge": False,
+                            "is_sandbox": False,
+                        }
+                if is_safe_genesis:
+                    if os.path.basename(genesis_root).lower() == candidate_name.lower():
+                        return {
+                            "workspace_root": genesis_root,
+                            "bound": True,
+                            "workspace_mode": "local_dev",
+                            "is_bridge": False,
+                            "is_sandbox": False,
+                        }
+                    cand = os.path.join(genesis_root, candidate_name)
+                    if os.path.isdir(cand) and not is_forbidden_workspace_path(cand):
+                        return {
+                            "workspace_root": os.path.abspath(cand),
+                            "bound": True,
+                            "workspace_mode": "local_dev",
+                            "is_bridge": False,
+                            "is_sandbox": False,
+                        }
 
-        # 如果项目关联了文件夹名或路径
-        for candidate_name in [project_folder, project_name]:
-            if not candidate_name:
-                continue
-            if os.path.isabs(candidate_name) and os.path.isdir(candidate_name):
-                return candidate_name
             if is_safe_parent:
-                if os.path.basename(parent_dir).lower() == candidate_name.lower():
-                    return parent_dir
-                cand = os.path.join(parent_dir, candidate_name)
-                if os.path.isdir(cand):
-                    return cand
-            if os.path.isdir(genesis_root):
-                if os.path.basename(genesis_root).lower() == candidate_name.lower():
-                    return genesis_root
-                cand = os.path.join(genesis_root, candidate_name)
-                if os.path.isdir(cand):
-                    return cand
+                return {
+                    "workspace_root": parent_dir,
+                    "bound": True,
+                    "workspace_mode": "local_dev",
+                    "is_bridge": False,
+                    "is_sandbox": False,
+                }
+            if is_safe_genesis:
+                return {
+                    "workspace_root": genesis_root,
+                    "bound": True,
+                    "workspace_mode": "local_dev",
+                    "is_bridge": False,
+                    "is_sandbox": False,
+                }
 
-        # 默认回退至安全父目录或 genesis_root
-        if is_safe_parent:
-            return parent_dir
+        # 5. 生产/容器/最终安全兜底：严禁返回 /app、后端源码目录或系统目录，统一隔离至用户沙箱目录
+        sandbox_ws = get_isolated_sandbox_workspace(user_id=user_id)
+        return {
+            "workspace_root": sandbox_ws,
+            "bound": False,
+            "workspace_mode": "unbound",
+            "is_bridge": False,
+            "is_sandbox": True,
+        }
 
-        if os.path.isdir(genesis_root) and genesis_root != "/":
-            return genesis_root
-
-        cwd = os.getcwd()
-        if cwd != "/":
-            return cwd
-
-        return "/app" if os.path.isdir("/app") else genesis_root
+    async def resolve_workspace_root(
+        self,
+        user_id: str,
+        session_id: Any = None,
+        explicit_path: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> str:
+        """多级解析当前会话对应的真实物理工作区绝对路径"""
+        info = await self.resolve_workspace_info(
+            user_id=user_id,
+            session_id=session_id,
+            explicit_path=explicit_path,
+            project_id=project_id,
+        )
+        return str(info["workspace_root"])
 
     async def collect_tools(
         self,

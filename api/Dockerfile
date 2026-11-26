@@ -33,6 +33,9 @@ RUN uv sync --frozen --no-dev --default-index https://pypi.tuna.tsinghua.edu.cn/
 # 复制源码
 COPY . .
 
+# 预建与 /app 源码物理隔离的沙箱工作区根目录
+RUN mkdir -p /tmp/genesis/sandboxes/workspaces
+
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PORT=8000
 

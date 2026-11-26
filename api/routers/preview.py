@@ -4,6 +4,11 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import HTMLResponse, FileResponse
 
+from core.workspace_guard import (
+    get_isolated_sandbox_workspace,
+    is_forbidden_workspace_path,
+    is_sandbox_root_path,
+)
 from services.terminal_manager import get_default_workspace
 from services.workspace_tool_executor import WorkspaceToolExecutor
 from services.preview_service import inject_preview_bridge
@@ -12,11 +17,20 @@ router = APIRouter(prefix="/preview", tags=["Workspace Preview Bridge"])
 
 
 def _get_workspace_root(workspace_path: Optional[str] = None) -> str:
-    if workspace_path and os.path.isdir(workspace_path):
+    if (
+        workspace_path
+        and os.path.isdir(workspace_path)
+        and not is_forbidden_workspace_path(workspace_path)
+    ):
+        if is_sandbox_root_path(workspace_path):
+            return get_isolated_sandbox_workspace(base_dir=workspace_path)
         return os.path.abspath(workspace_path)
-    env_root = os.environ.get("WORKSPACE_ROOT")
-    if env_root and os.path.isdir(env_root):
-        return os.path.abspath(env_root)
+    env_root = (os.environ.get("WORKSPACE_ROOT") or "").strip()
+    if env_root and not is_forbidden_workspace_path(env_root):
+        if is_sandbox_root_path(env_root):
+            return get_isolated_sandbox_workspace(base_dir=env_root)
+        if os.path.isdir(env_root):
+            return os.path.abspath(env_root)
     return get_default_workspace()
 
 

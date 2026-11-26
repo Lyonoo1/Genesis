@@ -3,6 +3,10 @@ import { WorkspaceFileNode } from "@/lib/workspace/localWorkspaceManager";
 
 export interface WorkspaceTreeResponse {
   success: boolean;
+  bound?: boolean;
+  workspace_mode?: string;
+  is_bridge?: boolean;
+  is_sandbox?: boolean;
   workspace_root: string;
   name: string;
   tree: WorkspaceFileNode[];

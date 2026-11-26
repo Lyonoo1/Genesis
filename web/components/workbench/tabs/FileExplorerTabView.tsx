@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useCallback, useEffect } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import {
   FileCode,
   Search,
@@ -10,6 +11,7 @@ import {
   ChevronRight,
   ChevronDown,
   Folders,
+  Radio,
 } from "lucide-react";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { useCanvasStore } from "@/stores/useCanvasStore";
@@ -152,10 +154,16 @@ export function FileExplorerTabView({
   selectedFilePath,
   onSelectFile,
 }: FileExplorerTabViewProps) {
+  const router = useRouter();
   const { activeProjectId, activeSessionId, sessions, projects, updateProject } = useSessionStore();
   const activeSession = (sessions || []).find((s) => s && s.id === activeSessionId);
   const resolvedProjectId = activeSession?.project_id || activeProjectId || null;
   const currentProject = (projects || []).find((p) => p && p.id === resolvedProjectId);
+
+  const isDesktopEnv =
+    typeof window !== "undefined" &&
+    (Boolean((window as any).electronAPI?.isDesktop) ||
+      process.env.NEXT_PUBLIC_BASE_PATH === "");
 
   const {
     status: localStatus,
@@ -173,6 +181,10 @@ export function FileExplorerTabView({
     }
   };
 
+  const handleOpenBridgeSettings = () => {
+    router.push("/settings?tab=bridge");
+  };
+
   const {
     artifacts,
     activeArtifactId,
@@ -182,13 +194,41 @@ export function FileExplorerTabView({
 
   const [serverTree, setServerTree] = useState<WorkspaceFileNode[]>([]);
   const [serverWorkspaceName, setServerWorkspaceName] = useState<string>("");
+  const [serverBound, setServerBound] = useState<boolean>(false);
+  const [isServerBridge, setIsServerBridge] = useState<boolean>(false);
   const [isLoadingServerTree, setIsLoadingServerTree] = useState(false);
 
-  // 自动加载工作区文件树（解决云端部署下右栏空白，优先本地树，无本地则加载服务端/Bridge树）
+  const applyServerTreeResponse = useCallback(
+    (res: Awaited<ReturnType<typeof fetchWorkspaceTreeApi>> | null | undefined) => {
+      const bound = res?.bound !== false;
+      setServerBound(bound);
+      setIsServerBridge(Boolean(res?.is_bridge));
+      if (res?.success && Array.isArray(res.tree)) {
+        setServerTree(res.tree);
+        setServerWorkspaceName(res.name || "");
+      } else {
+        setServerTree([]);
+        setServerWorkspaceName("");
+      }
+    },
+    []
+  );
+
+  // 自动加载工作区文件树（优先本地目录句柄；Web 未关联或桌面端拉取服务端/Bridge 树）
   useEffect(() => {
     let isCancelled = false;
 
-    // 如果本地已经连接且有文件树，则不需要重复加载服务端树
+    // Web 端浏览器已授权本地目录句柄时，无需回退请求服务端树
+    if (!isDesktopEnv && localStatus === "CONNECTED") {
+      setServerTree([]);
+      setServerWorkspaceName("");
+      setServerBound(false);
+      setIsServerBridge(false);
+      setIsLoadingServerTree(false);
+      return;
+    }
+
+    // 桌面端若已有扫描树也跳过重复请求
     if (localStatus === "CONNECTED" && fileTree.length > 0) {
       setIsLoadingServerTree(false);
       return;
@@ -197,23 +237,37 @@ export function FileExplorerTabView({
     setIsLoadingServerTree(true);
     fetchWorkspaceTreeApi(activeSession?.id, resolvedProjectId)
       .then((res) => {
-        if (!isCancelled && res?.success && Array.isArray(res.tree)) {
-          setServerTree(res.tree);
-          if (res.name) setServerWorkspaceName(res.name);
+        if (!isCancelled) {
+          applyServerTreeResponse(res);
         }
       })
       .catch((e) => {
+        if (!isCancelled) {
+          setServerTree([]);
+          setServerWorkspaceName("");
+          setServerBound(false);
+          setIsServerBridge(false);
+        }
         console.debug("获取服务端工作区文件树失败:", e);
       })
       .finally(() => {
-        setIsLoadingServerTree(false);
+        if (!isCancelled) {
+          setIsLoadingServerTree(false);
+        }
       });
 
     return () => {
       isCancelled = true;
       setIsLoadingServerTree(false);
     };
-  }, [localStatus, fileTree.length, activeSession?.id, resolvedProjectId]);
+  }, [
+    isDesktopEnv,
+    localStatus,
+    fileTree.length,
+    activeSession?.id,
+    resolvedProjectId,
+    applyServerTreeResponse,
+  ]);
 
   const [viewMode, setViewMode] = useState<"preview" | "code">("preview");
   const [filterQuery, setFilterQuery] = useState("");
@@ -262,14 +316,11 @@ export function FileExplorerTabView({
     const handleWorkspaceRefresh = async (ev: Event) => {
       const detail = (ev as CustomEvent<{ path?: string; reverted?: boolean }>)?.detail;
 
-      // 1. 若非本地直连，同步刷新服务端目录树
-      if (localStatus !== "CONNECTED") {
+      // 1. 若非 Web 本地直连，同步刷新服务端目录树
+      if (isDesktopEnv || localStatus !== "CONNECTED") {
         fetchWorkspaceTreeApi(activeSession?.id, resolvedProjectId)
           .then((res) => {
-            if (res?.success && Array.isArray(res.tree)) {
-              setServerTree(res.tree);
-              if (res.name) setServerWorkspaceName(res.name);
-            }
+            applyServerTreeResponse(res);
           })
           .catch(() => {});
       }
@@ -563,16 +614,20 @@ export function FileExplorerTabView({
                   ? "未选择文件"
                   : localStatus === "NEED_PERMISSION"
                   ? "需要唤醒访问权限"
-                  : "未连接工作区"}
+                  : localStatus === "CONNECTED" || serverBound
+                  ? "工作区目录为空"
+                  : "未关联工作区"}
               </h3>
-              <p className="text-xs text-[#71717A] max-w-xs mb-4">
+              <p className="text-xs text-[#71717A] max-w-xs mb-4 leading-relaxed">
                 {effectiveFileTree.length > 0
                   ? "在右侧目录树中选择文件直接预览与代码编辑"
                   : localStatus === "NEED_PERMISSION"
                   ? `已关联文件夹 "${directoryName || currentProject?.folder_name || '本地目录'}"，浏览器安全机制需轻点一次重新授权`
-                  : currentProject?.folder_name
-                  ? `关联项目目录: ${currentProject.folder_name}，可关联本地或在右侧查看云端文件`
-                  : "关联本地文件夹以同步浏览并实时编辑本地项目代码"}
+                  : localStatus === "CONNECTED" || serverBound
+                  ? "当前已关联的工作区目录下暂无文件"
+                  : isDesktopEnv
+                  ? "关联本地项目文件夹，即可同步浏览并编辑本地代码"
+                  : "请点击「关联本地」选择项目目录，或连接 Local Bridge 同步本地代码"}
               </p>
               {effectiveFileTree.length === 0 && localStatus === "NEED_PERMISSION" ? (
                 <button
@@ -583,15 +638,27 @@ export function FileExplorerTabView({
                   <HardDrive className="w-3.5 h-3.5" />
                   <span>点击唤醒访问权限</span>
                 </button>
-              ) : effectiveFileTree.length === 0 && localStatus !== "CONNECTED" ? (
-                <button
-                  type="button"
-                  onClick={handleAttachDirectory}
-                  className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-xs text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm font-medium"
-                >
-                  <HardDrive className="w-3.5 h-3.5" />
-                  <span>关联本地文件夹</span>
-                </button>
+              ) : effectiveFileTree.length === 0 && localStatus !== "CONNECTED" && !serverBound ? (
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAttachDirectory}
+                    className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-xs text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm font-medium"
+                  >
+                    <HardDrive className="w-3.5 h-3.5" />
+                    <span>关联本地文件夹</span>
+                  </button>
+                  {!isDesktopEnv && (
+                    <button
+                      type="button"
+                      onClick={handleOpenBridgeSettings}
+                      className="px-3.5 py-1.5 bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs text-zinc-200 rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer font-medium"
+                    >
+                      <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>连接 Local Bridge</span>
+                    </button>
+                  )}
+                </div>
               ) : null}
             </div>
           )}
@@ -620,11 +687,25 @@ export function FileExplorerTabView({
             <div className="p-2 border-b border-[#242427] space-y-1.5">
               <div className="flex items-center justify-between px-0.5">
                 <span className="text-[11px] font-medium text-[#A1A1AA] flex items-center gap-1.5 truncate">
-                  <Folders className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                  <Folders
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      isServerBridge
+                        ? "text-emerald-400"
+                        : localStatus === "CONNECTED" || serverBound
+                        ? "text-blue-400"
+                        : "text-[#71717A]"
+                    }`}
+                  />
                   <span className="truncate">
                     {localStatus === "CONNECTED"
                       ? directoryName || "本地工作区"
-                      : serverWorkspaceName || currentProject?.folder_name || "云端工作区"}
+                      : isServerBridge
+                      ? `Bridge · ${serverWorkspaceName || "本地节点"}`
+                      : serverBound
+                      ? serverWorkspaceName || currentProject?.folder_name || "工作区"
+                      : effectiveFileTree.length > 0
+                      ? "临时沙箱 (未关联)"
+                      : "未关联工作区"}
                   </span>
                 </span>
                 {localStatus !== "CONNECTED" && (
@@ -698,21 +779,47 @@ export function FileExplorerTabView({
                     唤醒授权
                   </button>
                 </div>
+              ) : localStatus === "CONNECTED" || serverBound ? (
+                <div className="h-full flex flex-col items-center justify-center p-4 text-center select-none">
+                  <div className="text-xs text-[#71717A] mb-1">当前工作区目录为空</div>
+                  <div className="text-[11px] text-[#55555C]">新建或生成的文件将显示在此处</div>
+                </div>
               ) : (
                 <div className="h-full flex flex-col items-center justify-center p-4 text-center select-none">
-                  <div className="text-xs text-[#71717A] mb-1">目录树为空或未连接</div>
+                  <div className="w-9 h-9 rounded-xl bg-white/[0.04] border border-white/5 flex items-center justify-center text-[#71717A] mb-2.5">
+                    <Folders className="w-4 h-4" />
+                  </div>
+                  <div className="text-xs font-medium text-[#D4D4D8] mb-1">未关联工作区</div>
+                  <div className="text-[11px] text-[#71717A] leading-relaxed mb-3 max-w-[190px]">
+                    {isDesktopEnv
+                      ? "点击关联本地文件夹开始浏览项目"
+                      : "请点击「关联本地」或连接 Local Bridge"}
+                  </div>
                   {currentProject?.folder_name && (
-                    <div className="text-[11px] text-[#A1A1AA] mb-2 truncate max-w-[180px]">
-                      关联目录: {currentProject.folder_name}
+                    <div className="text-[10px] text-[#A1A1AA] mb-2.5 truncate max-w-[180px]">
+                      原关联目录: {currentProject.folder_name}
                     </div>
                   )}
-                  <button
-                    type="button"
-                    onClick={handleAttachDirectory}
-                    className="px-3 py-1 bg-white/[0.08] hover:bg-white/15 text-xs text-white rounded-md transition-colors cursor-pointer"
-                  >
-                    关联本地文件夹
-                  </button>
+                  <div className="flex flex-col gap-1.5 w-full max-w-[170px]">
+                    <button
+                      type="button"
+                      onClick={handleAttachDirectory}
+                      className="w-full px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-xs text-white rounded-md transition-colors cursor-pointer font-medium flex items-center justify-center gap-1.5"
+                    >
+                      <HardDrive className="w-3 h-3" />
+                      <span>关联本地</span>
+                    </button>
+                    {!isDesktopEnv && (
+                      <button
+                        type="button"
+                        onClick={handleOpenBridgeSettings}
+                        className="w-full px-3 py-1.5 bg-white/[0.06] hover:bg-white/[0.12] border border-white/10 text-xs text-zinc-200 rounded-md transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <Radio className="w-3 h-3 text-emerald-400" />
+                        <span>连接 Local Bridge</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

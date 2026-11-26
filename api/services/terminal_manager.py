@@ -52,25 +52,40 @@ def kill_process_group(pid: int, sig=signal.SIGTERM):
             logger.warning(f"Error terminating pg {pid}: {e}")
 
 
+from core.workspace_guard import (
+    get_api_source_root,
+    get_isolated_sandbox_workspace,
+    is_forbidden_workspace_path,
+    is_restricted_env,
+    is_sandbox_root_path,
+)
+
 logger = logging.getLogger("genesis.terminal")
 
 
-def get_default_workspace() -> str:
-    """获取终端默认工作目录，优先寻找 Genesis 项目根目录"""
-    env_root = os.environ.get("WORKSPACE_ROOT")
-    if env_root and os.path.isdir(env_root):
-        return env_root
+def get_default_workspace(user_id: Optional[str] = None) -> str:
+    """获取终端默认工作目录，受限环境下强制隔离至沙箱目录，严禁回退至 /app 或系统目录"""
+    env_root = (os.environ.get("WORKSPACE_ROOT") or "").strip()
+    if env_root and not is_forbidden_workspace_path(env_root):
+        if is_sandbox_root_path(env_root):
+            return get_isolated_sandbox_workspace(user_id=user_id, base_dir=env_root)
+        if os.path.isdir(env_root):
+            return os.path.abspath(env_root)
 
-    current_file = os.path.abspath(__file__)
-    # .../Genesis/api/services/terminal_manager.py -> .../Genesis
-    genesis_root = os.path.abspath(os.path.join(current_file, "..", "..", ".."))
-    if os.path.isdir(genesis_root) and (
-        os.path.exists(os.path.join(genesis_root, "web"))
-        or os.path.exists(os.path.join(genesis_root, ".git"))
-    ):
-        return genesis_root
+    if not is_restricted_env():
+        api_root = get_api_source_root()
+        genesis_root = os.path.abspath(os.path.join(str(api_root), ".."))
+        if (
+            os.path.isdir(genesis_root)
+            and not is_forbidden_workspace_path(genesis_root)
+            and (
+                os.path.exists(os.path.join(genesis_root, "web"))
+                or os.path.exists(os.path.join(genesis_root, ".git"))
+            )
+        ):
+            return genesis_root
 
-    return os.getcwd()
+    return get_isolated_sandbox_workspace(user_id=user_id)
 
 
 class TerminalSession:
@@ -91,8 +106,8 @@ class TerminalSession:
         self.id = session_id
         self.title = title or f"Terminal {session_id[:6]}"
         self.cwd = (
-            cwd
-            if (cwd and os.path.isdir(cwd))
+            os.path.abspath(cwd)
+            if (cwd and os.path.isdir(cwd) and not is_forbidden_workspace_path(cwd))
             else get_default_workspace()
         )
         self.rows = max(1, min(rows, 1000))

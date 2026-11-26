@@ -14,6 +14,7 @@ services:
       - FRONTEND_URL=https://petpalapp.cn
       - SQLITE_DB_PATH=/data/genesis.db
       - SANDBOX_TMP_DIR=/tmp/genesis/sandboxes
+      - WORKSPACE_ROOT=/tmp/genesis/sandboxes/workspaces
     volumes:
       - genesis-data:/data
       - genesis-sandboxes:/tmp/genesis/sandboxes
